@@ -1,0 +1,16 @@
+target/
+.env
+*.log
+*.lcov
+*.bak
+.git/
+.fslckout
+instructions.md
+.plans/
+debt.json
+flamegraph*.svg
+perf.*
+pkg/
+*.tar.zst
+.kilo/
+.opencode/

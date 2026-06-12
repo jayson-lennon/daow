@@ -1,0 +1,14 @@
+error: DAO methods must have a return type
+  --> tests/compile_fail/no_return_type.rs:12:5
+   |
+12 | /     #[query("SELECT * FROM recalls")]
+13 | |     async fn get_all(&self);
+   | |____________________________^
+
+warning: unused imports: `Pool` and `async_trait`
+ --> tests/compile_fail/no_return_type.rs:2:11
+  |
+2 | use dao::{async_trait, dao, Entity, Pool};
+  |           ^^^^^^^^^^^               ^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

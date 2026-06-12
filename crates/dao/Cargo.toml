@@ -1,0 +1,17 @@
+[package]
+name = "dao"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dao-macros = { path = "../dao-macros" }
+rusqlite = { version = "0.31", features = ["bundled"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
+async-trait = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+trybuild = "1"
+
+[build-dependencies]
+rusqlite = { version = "0.31", features = ["bundled"] }

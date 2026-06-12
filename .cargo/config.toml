@@ -1,0 +1,2 @@
+[env]
+DAO_DATABASE_URL = { value = "crates/dao/tests/db/test.db", relative = true }

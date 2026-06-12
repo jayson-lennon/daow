@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/dao", "crates/dao-macros"]
+resolver = "2"
