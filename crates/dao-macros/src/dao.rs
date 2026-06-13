@@ -337,6 +337,22 @@ fn extract_generic_arg(args: &PathArguments) -> syn::Result<Type> {
         "expected generic type argument (e.g., Option<T>)",
     ))
 }
+/// Count the effective number of SQL parameters from method params.
+/// Simple ident params (e.g., `id: i64`) count as 1.
+/// Destructured struct params (e.g., `User { name, id, .. }: User`) count as the number of named fields.
+fn count_effective_params(params: &[syn::PatType]) -> usize {
+    params
+        .iter()
+        .map(|p| match &*p.pat {
+            syn::Pat::Ident(_) => 1,
+            syn::Pat::Struct(s) => s.fields.len(),
+            _ => panic!(
+                "expected identifiable or struct destructured parameter"
+            ),
+        })
+        .sum()
+}
+
 
 /// Validate SQL statements at compile time for Query and Execute methods.
 fn validate_sql(methods: &mut [DaoMethod]) -> syn::Result<()> {
@@ -389,14 +405,16 @@ fn validate_sql(methods: &mut [DaoMethod]) -> syn::Result<()> {
             }
         };
 
-        let expected_params = method.params.len();
+        let expected_params = count_effective_params(&method.params);
         if param_count != expected_params {
             // Allow single-entity expansion for #[execute]: if there's exactly one
             // non-self parameter and more placeholders than params, defer validation
             // to a compile-time FIELD_COUNT const assertion.
             let is_entity_expand = matches!(method.method_kind, MethodKind::Execute)
                 && expected_params == 1
-                && param_count > 1;
+                && param_count > 1
+                && method.params.len() == 1
+                && matches!(&*method.params[0].pat, syn::Pat::Ident(_));
 
             if !is_entity_expand {
                 return Err(syn::Error::new(
@@ -553,7 +571,7 @@ fn get_param_name(method: &DaoMethod, index: usize) -> &syn::Ident {
     if let syn::Pat::Ident(pat_ident) = &*method.params[index].pat {
         &pat_ident.ident
     } else {
-        panic!("expected identifiable parameter name");
+        panic!("expected simple ident parameter name for entity-based annotations (#[insert]/#[update]/#[delete]/entity expansion); destructured patterns are not supported here")
     }
 }
 
@@ -571,22 +589,32 @@ fn generate_param_tokens(method: &DaoMethod) -> Vec<proc_macro2::TokenStream> {
 }
 
 /// Generate parameter binding expressions for SQL execution.
+/// Supports simple ident params and destructured struct params.
 fn generate_param_bindings(method: &DaoMethod) -> proc_macro2::TokenStream {
-    let param_names: Vec<_> = method
+    let bindings: Vec<_> = method
         .params
         .iter()
-        .map(|p| {
-            if let syn::Pat::Ident(pat_ident) = &*p.pat {
-                &pat_ident.ident
-            } else {
-                panic!("expected identifiable parameter name");
+        .flat_map(|p| match &*p.pat {
+            syn::Pat::Ident(pat_ident) => {
+                let ident = &pat_ident.ident;
+                vec![quote! { dao::ToSqlColumn::to_column(&#ident)? }]
             }
+            syn::Pat::Struct(pat_struct) => {
+                pat_struct.fields.iter().map(|field_pat| {
+                    let binding = match &*field_pat.pat {
+                        syn::Pat::Ident(ident) => &ident.ident,
+                        _ => panic!("expected identifiable field binding in struct pattern"),
+                    };
+                    quote! { dao::ToSqlColumn::to_column(&#binding)? }
+                }).collect()
+            }
+            _ => panic!("expected identifiable or struct destructured parameter"),
         })
         .collect();
 
-    if param_names.is_empty() {
+    if bindings.is_empty() {
         quote! { vec![] }
     } else {
-        quote! { vec![#(dao::ToSqlColumn::to_column(&#param_names)?),*] }
+        quote! { vec![#(#bindings),*] }
     }
 }

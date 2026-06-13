@@ -1,0 +1,15 @@
+error: parameter count mismatch in method 'bad': SQL has 3 placeholders but method has 2 parameters
+  --> tests/compile_fail/destructured_field_count_mismatch.rs:12:1
+   |
+12 | #[dao]
+   | ^^^^^^
+   |
+   = note: this error originates in the attribute macro `dao` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unused imports: `ExecuteResult`, `Result`, and `async_trait`
+ --> tests/compile_fail/destructured_field_count_mismatch.rs:3:11
+  |
+3 | use dao::{async_trait, dao, Entity, ExecuteResult, Result};
+  |           ^^^^^^^^^^^               ^^^^^^^^^^^^^  ^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

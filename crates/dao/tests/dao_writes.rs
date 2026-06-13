@@ -368,3 +368,145 @@ async fn dao_execute_entity_expansion() {
     let fetched = dao.get_by_id(1).await.unwrap();
     assert_eq!(fetched, Some(updated));
 }
+
+// --- DAO using #[execute] with destructured params ---
+#[dao]
+#[async_trait]
+trait DestructuredDao {
+    #[query("SELECT id, name, price FROM items WHERE id = ?")]
+    async fn get(&self, id: i64) -> Result<Option<Item>>;
+
+    // Destructured entity — no scalars
+    #[execute("UPDATE items SET name = ?, price = ? WHERE id = ?")]
+    async fn set_name_and_price(&self, Item { name, price, id, .. }: Item) -> Result<ExecuteResult>;
+
+    // Query with destructured entity param
+    #[query("SELECT id, name, price FROM items WHERE name = ? AND price = ?")]
+    async fn find_by_name_and_price(&self, Item { name, price, .. }: Item) -> Result<Vec<Item>>;
+
+    #[execute("UPDATE items SET name = ? WHERE id = ? AND price > ?")]
+    async fn set_name_if_cheaper(
+        &self,
+        Item { name, id, .. }: Item,  // 2 params: name, id
+        min_price: f64,                // 1 scalar param
+    ) -> Result<ExecuteResult>;
+
+    // Complete destructuring (no ..) — all fields listed explicitly
+    #[execute("UPDATE items SET name = ?, price = ? WHERE id = ?")]
+    async fn update_all_fields(&self, Item { name, price, id }: Item) -> Result<ExecuteResult>;
+}
+
+#[tokio::test]
+async fn dao_execute_destructured_no_scalars() {
+    let (pool, _dir) = setup_items_db().await;
+    let dao = DestructuredDao::new(pool.clone());
+
+    // Insert first using ItemDao
+    let insert_dao = ItemDao::new(pool);
+    let item = Item {
+        id: 1,
+        name: "widget".to_string(),
+        price: 9.99,
+    };
+    insert_dao.insert(item).await.unwrap();
+
+    // Update via destructured entity param
+    let item = Item {
+        id: 1,
+        name: "gadget".to_string(),
+        price: 19.99,
+    };
+    let result = dao.set_name_and_price(item).await.unwrap();
+    assert_eq!(result.rows_affected, 1);
+
+    // Verify
+    let fetched = dao.get(1).await.unwrap();
+    let fetched = fetched.unwrap();
+    assert_eq!(fetched.name, "gadget");
+    assert_eq!(fetched.price, 19.99);
+}
+
+#[tokio::test]
+async fn dao_execute_destructured_with_scalar() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, name TEXT, price REAL);"
+    ).unwrap();
+    drop(conn);
+
+    let pool = dao::Pool::open(db_path.to_str().unwrap()).unwrap();
+    let dao = DestructuredDao::new(pool.clone());
+
+    // Insert an item with price 5.00
+    let insert_dao = ItemDao::new(pool);
+    insert_dao.insert(Item { id: 1, name: "widget".to_string(), price: 5.00 }).await.unwrap();
+
+    // Try to set name where price > 3.00 and id = 1 — should match
+    let item = Item { id: 1, name: "premium widget".to_string(), price: 5.00 };
+    let result = dao.set_name_if_cheaper(item, 3.00).await.unwrap();
+    assert_eq!(result.rows_affected, 1);
+
+    // Verify name was updated
+    let fetched = dao.get(1).await.unwrap().unwrap();
+    assert_eq!(fetched.name, "premium widget");
+
+    // Try where price > 10.00 — should NOT match (price is only 5.00)
+    let item2 = Item { id: 1, name: "should not apply".to_string(), price: 5.00 };
+    let result2 = dao.set_name_if_cheaper(item2, 10.00).await.unwrap();
+    assert_eq!(result2.rows_affected, 0);
+
+    // Name should not have changed
+    let fetched2 = dao.get(1).await.unwrap().unwrap();
+    assert_eq!(fetched2.name, "premium widget");
+}
+
+#[tokio::test]
+async fn dao_query_destructured() {
+    let (pool, _dir) = setup_items_db().await;
+    let dao = DestructuredDao::new(pool.clone());
+
+    // Insert items directly
+    let item1 = Item { id: 1, name: "widget".to_string(), price: 5.00 };
+    let item2 = Item { id: 2, name: "gadget".to_string(), price: 5.00 };
+    let item3 = Item { id: 3, name: "widget".to_string(), price: 10.00 };
+    pool.execute("INSERT INTO items (id, name, price) VALUES (?, ?, ?)", dao::ToRow::to_insert_params(&item1).unwrap()).await.unwrap();
+    pool.execute("INSERT INTO items (id, name, price) VALUES (?, ?, ?)", dao::ToRow::to_insert_params(&item2).unwrap()).await.unwrap();
+    pool.execute("INSERT INTO items (id, name, price) VALUES (?, ?, ?)", dao::ToRow::to_insert_params(&item3).unwrap()).await.unwrap();
+
+    // Query by destructured name + price
+    let search = Item { id: 0, name: "widget".to_string(), price: 5.00 };
+    let results = dao.find_by_name_and_price(search).await.unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].name, "widget");
+    assert_eq!(results[0].price, 5.00);
+
+    // Search for price 5.00 across all names — should match widget + gadget
+    let search2 = Item { id: 0, name: "gadget".to_string(), price: 5.00 };
+    let results2 = dao.find_by_name_and_price(search2).await.unwrap();
+    assert_eq!(results2.len(), 1);
+    assert_eq!(results2[0].name, "gadget");
+}
+
+#[tokio::test]
+async fn dao_execute_destructured_complete() {
+    let (pool, _dir) = setup_items_db().await;
+    let dao = DestructuredDao::new(pool.clone());
+
+    // Insert via pool
+    pool.execute(
+        "INSERT INTO items (id, name, price) VALUES (?, ?, ?)",
+        dao::ToRow::to_insert_params(&Item { id: 1, name: "old".to_string(), price: 5.00 }).unwrap(),
+    ).await.unwrap();
+
+    // Update using complete destructuring (no ..)
+    let updated = Item { id: 1, name: "new".to_string(), price: 10.00 };
+    let result = dao.update_all_fields(updated).await.unwrap();
+    assert_eq!(result.rows_affected, 1);
+
+    // Verify the update
+    let fetched = dao.get(1).await.unwrap().unwrap();
+    assert_eq!(fetched.name, "new");
+    assert_eq!(fetched.price, 10.00);
+}
