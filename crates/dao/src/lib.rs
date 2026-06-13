@@ -665,4 +665,34 @@ mod tests {
             );
         }
     }
+
+    /// `:memory:` opens a per-connection private DB in SQLite. The pool must force
+    /// `max_size = 1` so all checkouts share one DB (otherwise schema created on one
+    /// connection is invisible to others -> "no such table").
+    #[tokio::test]
+    async fn memory_forces_single_connection() {
+        let pool = Pool::open(":memory:").unwrap();
+        pool.execute("CREATE TABLE mem (x INTEGER)", vec![])
+            .await
+            .unwrap();
+
+        // Multiple sequential checkouts must all see the table created above.
+        // Under the old behavior (max_size=4), a later checkout would land on a
+        // different connection with its own empty DB -> "no such table".
+        for _ in 0..5 {
+            let n: Option<i64> = pool.query_one("SELECT COUNT(*) FROM mem", vec![])
+                .await
+                .unwrap();
+            assert_eq!(n, Some(0), "table created earlier not visible on a later checkout");
+        }
+
+        // A checkout that does a write, then a later checkout, must see the write.
+        pool.execute("INSERT INTO mem VALUES (42)", vec![])
+            .await
+            .unwrap();
+        let v: Option<i64> = pool.query_one("SELECT x FROM mem", vec![])
+            .await
+            .unwrap();
+        assert_eq!(v, Some(42), "write on one checkout not visible on a later one");
+    }
 }

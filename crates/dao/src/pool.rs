@@ -6,6 +6,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
+use tracing::debug;
 
 use crate::entity_meta::ExecuteResult;
 use crate::error::{Error, Result};
@@ -106,9 +107,25 @@ impl PoolBuilder {
         let path = self
             .path
             .ok_or_else(|| Error::custom("PoolBuilder requires a path (call .path(...) first)"))?;
+
+        // In SQLite, `:memory:` opens a *per-connection* private database. With
+        // `max_size > 1` the pool would hand out connections that each see their own
+        // empty DB, so schema created on one is invisible to the others. The only
+        // correct behavior is a single connection. (Callers who genuinely want a
+        // pooled shared in-memory DB can pass an explicit
+        // `file:...?mode=memory&cache=shared` URI, which we leave untouched.)
+        let max_size = if is_memory(&path) {
+            if self.max_size != 1 {
+                debug!("`:memory:` forces max_size=1 (in-memory DB is per-connection)");
+            }
+            1
+        } else {
+            self.max_size
+        };
+
         let config = PoolConfig {
             path,
-            max_size: self.max_size,
+            max_size,
             acquire_timeout: self.acquire_timeout,
             pragmas: self.pragmas,
         };
@@ -133,6 +150,17 @@ impl Default for PoolBuilder {
     }
 }
 
+/// Whether `path` denotes a *private* in-memory database whose contents are
+/// per-connection in SQLite.
+///
+/// Matches the plain `:memory:` form (and only that). URI-based shared in-memory
+/// databases (`file:...?mode=memory&cache=shared`) are deliberately *not* matched,
+/// because in that mode all connections share one DB and the pool may keep
+/// `max_size > 1`.
+fn is_memory(path: &str) -> bool {
+    path.trim() == ":memory:"
+}
+
 impl Pool {
     /// Start a [`PoolBuilder`].
     pub fn builder() -> PoolBuilder {
@@ -143,6 +171,24 @@ impl Pool {
     ///
     /// Equivalent to `Pool::builder().path(path).build()` (defaults: `max_size = 4`,
     /// `acquire_timeout = 5s`, no pragmas).
+    ///
+    /// # `:memory:`
+    ///
+    /// Plain `\":memory:\"` opens a *per-connection* private database in SQLite.
+    /// To make it behave as a single shared in-memory DB across checkouts, the pool
+    /// **forces `max_size = 1`** for `\":memory:\"` (emitting a `tracing::debug!`).
+    /// This means:
+    ///
+    /// - All access serializes through one connection.
+    /// - A transaction held across `.await` blocks other pool operations until it
+    ///   commits or times out (per `acquire_timeout`). Operate on the transaction
+    ///   (`tx.*` or `dao.with(&tx)`) during a transaction, not on the pool.
+    /// - WAL does not apply to in-memory databases (SQLite ignores the pragma); this
+    ///   is expected and harmless for ephemeral test DBs.
+    ///
+    /// If you need a genuinely multi-connection in-memory DB, pass an explicit
+    /// `file:...?mode=memory&cache=shared` URI instead — it opts into SQLite's
+    /// shared in-memory cache and is left untouched by the pool.
     pub fn open(path: &str) -> Result<Self> {
         Self::builder().path(path).build()
     }

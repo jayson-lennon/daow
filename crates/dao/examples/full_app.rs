@@ -12,9 +12,8 @@ use dao::{
 
 /// Set up an in-memory database with schema.
 async fn setup_db() -> Result<Pool> {
-    // Use shared-cache in-memory URI so all pooled connections see the same DB.
-    // (`:memory:` is per-connection, which breaks under tokio::join! with max_size > 1.)
-    let pool = Pool::open("file:demo?mode=memory&cache=shared")?;
+    // Plain `:memory:` — the pool forces max_size=1 so all checkouts share one DB.
+    let pool = Pool::open(":memory:")?;
 
     // Set up schema.
     pool.execute(

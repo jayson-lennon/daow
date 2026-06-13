@@ -10,6 +10,7 @@ dao-macros = { path = "crates/dao-macros" }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
 async-trait = "0.1"
+tracing = "0.1"
 syn = { version = "2", features = ["full"] }
 quote = "1"
 proc-macro2 = "1"
