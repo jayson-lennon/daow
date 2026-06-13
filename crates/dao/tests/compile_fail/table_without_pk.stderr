@@ -1,0 +1,9 @@
+error: #[dao(table = "...")] requires at least one field marked with #[dao(pk)]
+ --> tests/compile_fail/table_without_pk.rs:5:1
+  |
+5 | / #[dao(table = "users")]
+6 | | struct User {
+7 | |     id: i64,
+8 | |     name: String,
+9 | | }
+  | |_^

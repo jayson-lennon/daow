@@ -1,8 +1,14 @@
 //! Custom types example: demonstrates FromSqlColumn for newtypes and column rename.
 //!
+//! Uses ProductId and CustomerId newtypes for strongly-typed IDs, plus
+//! Cents and Email as domain newtypes.
+//!
 //! Run with: cargo run --example custom_types
 
-use dao::{async_trait, dao, error::Error, row::ColumnValue, Entity, FromSqlColumn, Pool, Result};
+use dao::{
+    async_trait, dao, error::Error, row::ColumnValue, Entity, FromSqlColumn, Pool, Result,
+    ToSqlColumn,
+};
 
 /// Set up an in-memory database with schema and sample data.
 async fn setup_db() -> Pool {
@@ -54,6 +60,38 @@ async fn setup_db() -> Pool {
     pool
 }
 
+/// Strongly-typed product ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProductId(i64);
+
+impl FromSqlColumn for ProductId {
+    fn from_column(value: &ColumnValue) -> Result<Self> {
+        Ok(ProductId(i64::from_column(value)?))
+    }
+}
+
+impl ToSqlColumn for ProductId {
+    fn to_column(&self) -> Result<dao::Param> {
+        self.0.to_column()
+    }
+}
+
+/// Strongly-typed customer ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CustomerId(i64);
+
+impl FromSqlColumn for CustomerId {
+    fn from_column(value: &ColumnValue) -> Result<Self> {
+        Ok(CustomerId(i64::from_column(value)?))
+    }
+}
+
+impl ToSqlColumn for CustomerId {
+    fn to_column(&self) -> Result<dao::Param> {
+        self.0.to_column()
+    }
+}
+
 /// A validated email newtype.
 #[derive(Debug, PartialEq)]
 struct Email(String);
@@ -82,14 +120,14 @@ impl FromSqlColumn for Cents {
 
 #[derive(Debug, Entity)]
 struct Product {
-    id: i64,
+    id: ProductId,
     name: String,
     price: Cents,
 }
 
 #[derive(Debug, Entity)]
 struct Customer {
-    id: i64,
+    id: CustomerId,
     #[dao(column = "email_address")]
     email: Email,
 }
@@ -98,7 +136,7 @@ struct Customer {
 #[async_trait]
 trait ProductDao {
     #[query("SELECT id, name, price FROM products WHERE id = ?")]
-    async fn get_by_id(&self, id: i64) -> Result<Option<Product>>;
+    async fn get_by_id(&self, id: ProductId) -> Result<Option<Product>>;
 
     #[query("SELECT id, name, price FROM products ORDER BY price")]
     async fn get_all(&self) -> Result<Vec<Product>>;
@@ -108,7 +146,7 @@ trait ProductDao {
 #[async_trait]
 trait CustomerDao {
     #[query("SELECT id, email_address FROM customers WHERE id = ?")]
-    async fn get_by_id(&self, id: i64) -> Result<Option<Customer>>;
+    async fn get_by_id(&self, id: CustomerId) -> Result<Option<Customer>>;
 }
 
 #[tokio::main]
@@ -118,12 +156,12 @@ async fn main() {
     let customers = CustomerDao::new(pool);
 
     // Custom type: Cents
-    let widget = products.get_by_id(1).await.unwrap().unwrap();
+    let widget = products.get_by_id(ProductId(1)).await.unwrap().unwrap();
     println!("Product: {:?} — price = {:?}", widget.name, widget.price);
     assert_eq!(widget.price, Cents(999));
 
     // Custom type: Email with column rename
-    let alice = customers.get_by_id(1).await.unwrap().unwrap();
+    let alice = customers.get_by_id(CustomerId(1)).await.unwrap().unwrap();
     println!("Customer email: {:?}", alice.email);
     assert_eq!(alice.email, Email("alice@example.com".to_string()));
 

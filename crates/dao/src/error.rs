@@ -65,9 +65,10 @@ impl fmt::Display for Error {
 impl fmt::Debug for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::ColumnNotFound { name } => {
-                f.debug_struct("ColumnNotFound").field("name", name).finish()
-            }
+            Error::ColumnNotFound { name } => f
+                .debug_struct("ColumnNotFound")
+                .field("name", name)
+                .finish(),
             Error::TypeMismatch {
                 column,
                 expected,

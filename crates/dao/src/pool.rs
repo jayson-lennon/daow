@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 
+use crate::entity_meta::ExecuteResult;
 use crate::error::{Error, Result};
 use crate::from_row::FromRow;
 use crate::row::Row;
@@ -45,14 +46,14 @@ impl Pool {
         let inner = self.inner.clone();
 
         tokio::task::spawn_blocking(move || {
-            let conn = inner.lock().map_err(|_| {
-                Error::custom("connection lock poisoned")
-            })?;
+            let conn = inner
+                .lock()
+                .map_err(|_| Error::custom("connection lock poisoned"))?;
 
             let mut stmt = conn.prepare(&sql)?;
-            let mut rows = stmt.query(
-                rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
-            )?;
+            let mut rows = stmt.query(rusqlite::params_from_iter(
+                params.iter().map(|p| p.as_ref()),
+            ))?;
 
             match rows.next()? {
                 Some(row) => Ok(Some(T::from_row(&Row::new(row))?)),
@@ -75,14 +76,14 @@ impl Pool {
         let inner = self.inner.clone();
 
         tokio::task::spawn_blocking(move || {
-            let conn = inner.lock().map_err(|_| {
-                Error::custom("connection lock poisoned")
-            })?;
+            let conn = inner
+                .lock()
+                .map_err(|_| Error::custom("connection lock poisoned"))?;
 
             let mut stmt = conn.prepare(&sql)?;
-            let mut rows = stmt.query(
-                rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
-            )?;
+            let mut rows = stmt.query(rusqlite::params_from_iter(
+                params.iter().map(|p| p.as_ref()),
+            ))?;
 
             let mut results = Vec::new();
             while let Some(row) = rows.next()? {
@@ -90,6 +91,31 @@ impl Pool {
             }
 
             Ok(results)
+        })
+        .await
+        .map_err(|e| Error::custom(format!("spawn_blocking panicked: {e}")))?
+    }
+
+    /// Executes a write statement (INSERT, UPDATE, DELETE) and returns
+    /// the number of affected rows and the last insert rowid.
+    pub async fn execute(&self, sql: &str, params: Vec<Param>) -> Result<ExecuteResult> {
+        let sql = sql.to_owned();
+        let inner = self.inner.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = inner
+                .lock()
+                .map_err(|_| Error::custom("connection lock poisoned"))?;
+
+            let rows_affected = conn.execute(
+                &sql,
+                rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+            )?;
+
+            Ok(ExecuteResult {
+                rows_affected: rows_affected as u64,
+                last_insert_rowid: conn.last_insert_rowid(),
+            })
         })
         .await
         .map_err(|e| Error::custom(format!("spawn_blocking panicked: {e}")))?

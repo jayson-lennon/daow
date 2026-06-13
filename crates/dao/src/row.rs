@@ -120,13 +120,11 @@ impl<'a> Row<'a> {
     /// Internally: reads the rusqlite column value, wraps it in `ColumnValue`,
     /// then delegates to `T::from_column()`.
     pub fn get<T: FromSqlColumn>(&self, column_name: &str) -> Result<T> {
-        let value_ref = self.inner.get_ref(column_name).map_err(|e| {
-            match e {
-                rusqlite::Error::InvalidColumnIndex(_) => Error::ColumnNotFound {
-                    name: column_name.to_string(),
-                },
-                other => Error::Database(other),
-            }
+        let value_ref = self.inner.get_ref(column_name).map_err(|e| match e {
+            rusqlite::Error::InvalidColumnIndex(_) => Error::ColumnNotFound {
+                name: column_name.to_string(),
+            },
+            other => Error::Database(other),
         })?;
         let col_val = ColumnValue::new(value_ref);
         T::from_column(&col_val)

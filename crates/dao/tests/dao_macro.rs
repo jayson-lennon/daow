@@ -1,6 +1,6 @@
-use dao::{async_trait, dao, Entity, FromSqlColumn, Pool, Result};
-use dao::row::ColumnValue;
 use dao::error::Error;
+use dao::row::ColumnValue;
+use dao::{async_trait, dao, Entity, FromSqlColumn, Pool, Result};
 
 /// A simple entity for DAO tests.
 #[derive(Debug, PartialEq, Entity)]
@@ -29,21 +29,21 @@ async fn setup_test_db() -> Pool {
     let db_path = dir.path().join("test.db");
     let pool = Pool::open(db_path.to_str().unwrap()).unwrap();
 
-    pool.query_all::<i64>(
+    pool.execute(
         "CREATE TABLE recalls (id INTEGER PRIMARY KEY, name TEXT)",
         vec![],
     )
     .await
     .unwrap();
 
-    pool.query_all::<i64>(
+    pool.execute(
         "INSERT INTO recalls (id, name) VALUES (?, ?)",
         vec![Box::new(1i64), Box::new("recall_a".to_string())],
     )
     .await
     .unwrap();
 
-    pool.query_all::<i64>(
+    pool.execute(
         "INSERT INTO recalls (id, name) VALUES (?, ?)",
         vec![Box::new(2i64), Box::new("recall_b".to_string())],
     )
@@ -108,14 +108,21 @@ struct NamedRecall {
 #[async_trait]
 trait NamedRecallDao {
     #[query("SELECT id, name FROM recalls WHERE name = ? AND id > ?")]
-    async fn find_by_name_and_min_id(&self, name: String, min_id: i64) -> Result<Option<NamedRecall>>;
+    async fn find_by_name_and_min_id(
+        &self,
+        name: String,
+        min_id: i64,
+    ) -> Result<Option<NamedRecall>>;
 }
 
 #[tokio::test]
 async fn dao_multi_param() {
     let pool = setup_test_db().await;
     let named_dao = NamedRecallDao::new(pool);
-    let result = named_dao.find_by_name_and_min_id("recall_a".to_string(), 0).await.unwrap();
+    let result = named_dao
+        .find_by_name_and_min_id("recall_a".to_string(), 0)
+        .await
+        .unwrap();
     assert_eq!(
         result,
         Some(NamedRecall {
@@ -125,7 +132,10 @@ async fn dao_multi_param() {
     );
 
     // Should return None because id=1 is not > 1
-    let result = named_dao.find_by_name_and_min_id("recall_a".to_string(), 1).await.unwrap();
+    let result = named_dao
+        .find_by_name_and_min_id("recall_a".to_string(), 1)
+        .await
+        .unwrap();
     assert_eq!(result, None);
 }
 
@@ -163,14 +173,14 @@ async fn dao_custom_type() {
     let db_path = dir.path().join("test.db");
     let pool = Pool::open(db_path.to_str().unwrap()).unwrap();
 
-    pool.query_all::<i64>(
+    pool.execute(
         "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT)",
         vec![],
     )
     .await
     .unwrap();
 
-    pool.query_all::<i64>(
+    pool.execute(
         "INSERT INTO users (id, email) VALUES (?, ?)",
         vec![Box::new(1i64), Box::new("test@example.com".to_string())],
     )

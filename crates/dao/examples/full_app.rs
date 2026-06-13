@@ -1,86 +1,30 @@
-//! Full app example: multi-entity blog with Users, Posts, concurrent queries, and a Slug newtype.
+//! Full app example: multi-entity blog with Users, Posts, writes, concurrent queries, and newtypes.
+//!
+//! Demonstrates UserId, PostId as strongly-typed IDs, and a Slug newtype with
+//! symmetric FromSqlColumn / ToSqlColumn for validated read/write.
 //!
 //! Run with: cargo run --example full_app
 
-use dao::{async_trait, dao, error::Error, row::ColumnValue, Entity, FromSqlColumn, Pool, Result};
-/// Set up an in-memory database with schema and sample data.
+use dao::{
+    async_trait, dao, error::Error, row::ColumnValue, Entity, ExecuteResult, FromSqlColumn, Pool,
+    Result, ToSqlColumn,
+};
+
+/// Set up an in-memory database with schema.
 async fn setup_db() -> Pool {
     let pool = Pool::open(":memory:").unwrap();
 
     // Set up schema.
-    pool.query_all::<i64>(
+    pool.execute(
         "CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT, display_name TEXT)",
         vec![],
     )
     .await
     .unwrap();
 
-    pool.query_all::<i64>(
+    pool.execute(
         "CREATE TABLE posts (id INTEGER PRIMARY KEY, slug TEXT, author_id INTEGER, title TEXT, body TEXT)",
         vec![],
-    )
-    .await
-    .unwrap();
-
-    // Insert users.
-    pool.query_all::<i64>(
-        "INSERT INTO users (id, username, display_name) VALUES (?, ?, ?)",
-        vec![
-            Box::new(1i64),
-            Box::new("alice".to_string()),
-            Box::new("Alice".to_string()),
-        ],
-    )
-    .await
-    .unwrap();
-
-    pool.query_all::<i64>(
-        "INSERT INTO users (id, username, display_name) VALUES (?, ?, ?)",
-        vec![
-            Box::new(2i64),
-            Box::new("bob".to_string()),
-            Box::new("Bob".to_string()),
-        ],
-    )
-    .await
-    .unwrap();
-
-    // Insert posts (one has a NULL body — it's a draft).
-    pool.query_all::<i64>(
-        "INSERT INTO posts (id, slug, author_id, title, body) VALUES (?, ?, ?, ?, ?)",
-        vec![
-            Box::new(1i64),
-            Box::new("hello-world".to_string()),
-            Box::new(1i64),
-            Box::new("Hello World".to_string()),
-            Box::new("My first post!".to_string()),
-        ],
-    )
-    .await
-    .unwrap();
-
-    pool.query_all::<i64>(
-        "INSERT INTO posts (id, slug, author_id, title, body) VALUES (?, ?, ?, ?, ?)",
-        vec![
-            Box::new(2i64),
-            Box::new("rust-basics".to_string()),
-            Box::new(1i64),
-            Box::new("Rust Basics".to_string()),
-            Box::new(None::<String>) as dao::Param,
-        ],
-    )
-    .await
-    .unwrap();
-
-    pool.query_all::<i64>(
-        "INSERT INTO posts (id, slug, author_id, title, body) VALUES (?, ?, ?, ?, ?)",
-        vec![
-            Box::new(3i64),
-            Box::new("bobs-guide".to_string()),
-            Box::new(2i64),
-            Box::new("Bob's Guide".to_string()),
-            Box::new("Welcome!".to_string()),
-        ],
     )
     .await
     .unwrap();
@@ -88,8 +32,40 @@ async fn setup_db() -> Pool {
     pool
 }
 
-/// URL slug newtype.
-#[derive(Debug, PartialEq)]
+/// Strongly-typed user ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UserId(i64);
+
+impl FromSqlColumn for UserId {
+    fn from_column(value: &ColumnValue) -> Result<Self> {
+        Ok(UserId(i64::from_column(value)?))
+    }
+}
+
+impl ToSqlColumn for UserId {
+    fn to_column(&self) -> Result<dao::Param> {
+        self.0.to_column()
+    }
+}
+
+/// Strongly-typed post ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PostId(i64);
+
+impl FromSqlColumn for PostId {
+    fn from_column(value: &ColumnValue) -> Result<Self> {
+        Ok(PostId(i64::from_column(value)?))
+    }
+}
+
+impl ToSqlColumn for PostId {
+    fn to_column(&self) -> Result<dao::Param> {
+        self.0.to_column()
+    }
+}
+
+/// URL slug newtype with symmetric FromSqlColumn / ToSqlColumn.
+#[derive(Debug, Clone, PartialEq)]
 struct Slug(String);
 
 impl FromSqlColumn for Slug {
@@ -105,30 +81,44 @@ impl FromSqlColumn for Slug {
     }
 }
 
-#[derive(Debug, Entity)]
+impl ToSqlColumn for Slug {
+    fn to_column(&self) -> Result<dao::Param> {
+        self.0.to_column()
+    }
+}
+
+#[derive(Debug, Clone, Entity)]
+#[dao(table = "users")]
 struct User {
-    id: i64,
+    #[dao(pk)]
+    id: UserId,
     username: String,
     display_name: String,
 }
 
-#[derive(Debug, Entity)]
+#[derive(Debug, Clone, Entity)]
+#[dao(table = "posts")]
 struct Post {
-    id: i64,
+    #[dao(pk)]
+    id: PostId,
     slug: Slug,
-    author_id: i64,
+    author_id: UserId,
     title: String,
     body: Option<String>,
 }
 
 #[dao]
 #[async_trait]
+#[allow(dead_code)]
 trait UserDao {
     #[query("SELECT id, username, display_name FROM users WHERE id = ?")]
-    async fn get_by_id(&self, id: i64) -> Result<Option<User>>;
+    async fn get_by_id(&self, id: UserId) -> Result<Option<User>>;
 
     #[query("SELECT id, username, display_name FROM users ORDER BY id")]
     async fn get_all(&self) -> Result<Vec<User>>;
+
+    #[insert]
+    async fn insert(&self, user: User) -> Result<ExecuteResult>;
 }
 
 #[dao]
@@ -138,10 +128,13 @@ trait PostDao {
     async fn get_by_slug(&self, slug: String) -> Result<Option<Post>>;
 
     #[query("SELECT id, slug, author_id, title, body FROM posts WHERE author_id = ?")]
-    async fn get_by_author(&self, author_id: i64) -> Result<Vec<Post>>;
+    async fn get_by_author(&self, author_id: UserId) -> Result<Vec<Post>>;
 
     #[query("SELECT id, slug, author_id, title, body FROM posts ORDER BY id")]
     async fn get_all(&self) -> Result<Vec<Post>>;
+
+    #[insert]
+    async fn insert(&self, post: Post) -> Result<ExecuteResult>;
 }
 
 #[tokio::main]
@@ -149,6 +142,59 @@ async fn main() {
     let pool = setup_db().await;
     let user_dao = UserDao::new(pool.clone());
     let post_dao = PostDao::new(pool);
+
+    // Insert users via the DAO.
+    user_dao
+        .insert(User {
+            id: UserId(1),
+            username: "alice".to_string(),
+            display_name: "Alice".to_string(),
+        })
+        .await
+        .unwrap();
+
+    user_dao
+        .insert(User {
+            id: UserId(2),
+            username: "bob".to_string(),
+            display_name: "Bob".to_string(),
+        })
+        .await
+        .unwrap();
+
+    // Insert posts via the DAO.
+    post_dao
+        .insert(Post {
+            id: PostId(1),
+            slug: Slug("hello-world".to_string()),
+            author_id: UserId(1),
+            title: "Hello World".to_string(),
+            body: Some("My first post!".to_string()),
+        })
+        .await
+        .unwrap();
+
+    post_dao
+        .insert(Post {
+            id: PostId(2),
+            slug: Slug("rust-basics".to_string()),
+            author_id: UserId(1),
+            title: "Rust Basics".to_string(),
+            body: None, // draft
+        })
+        .await
+        .unwrap();
+
+    post_dao
+        .insert(Post {
+            id: PostId(3),
+            slug: Slug("bobs-guide".to_string()),
+            author_id: UserId(2),
+            title: "Bob's Guide".to_string(),
+            body: Some("Welcome!".to_string()),
+        })
+        .await
+        .unwrap();
 
     // Concurrent queries.
     let (users, posts) = tokio::join!(user_dao.get_all(), post_dao.get_all(),);
@@ -190,8 +236,8 @@ async fn main() {
         .unwrap();
     assert!(draft.body.is_none());
 
-    // Author filter.
-    let alice_posts = post_dao.get_by_author(1).await.unwrap();
+    // Author filter — uses UserId newtype.
+    let alice_posts = post_dao.get_by_author(UserId(1)).await.unwrap();
     assert_eq!(alice_posts.len(), 2);
 
     println!("\nAll checks passed!");
