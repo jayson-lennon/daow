@@ -24,7 +24,7 @@ trait RecallDao {
 }
 
 /// Helper: create a test database with schema and sample data.
-async fn setup_test_db() -> Pool {
+async fn setup_test_db() -> (Pool, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("test.db");
     let pool = Pool::open(db_path.to_str().unwrap()).unwrap();
@@ -50,13 +50,13 @@ async fn setup_test_db() -> Pool {
     .await
     .unwrap();
 
-    pool
+    (pool, dir)
 }
 
 /// Test: get_by_id returns the correct entity.
 #[tokio::test]
 async fn dao_get_by_id() {
-    let pool = setup_test_db().await;
+    let (pool, _dir) = setup_test_db().await;
     let recall_dao = RecallDao::new(pool);
     let result = recall_dao.get_by_id(1).await.unwrap();
     assert_eq!(
@@ -71,7 +71,7 @@ async fn dao_get_by_id() {
 /// Test: get_by_id returns None for missing ID.
 #[tokio::test]
 async fn dao_get_by_id_missing() {
-    let pool = setup_test_db().await;
+    let (pool, _dir) = setup_test_db().await;
     let recall_dao = RecallDao::new(pool);
     let result = recall_dao.get_by_id(999).await.unwrap();
     assert_eq!(result, None);
@@ -80,7 +80,7 @@ async fn dao_get_by_id_missing() {
 /// Test: get_all returns all entities.
 #[tokio::test]
 async fn dao_get_all() {
-    let pool = setup_test_db().await;
+    let (pool, _dir) = setup_test_db().await;
     let recall_dao = RecallDao::new(pool);
     let results = recall_dao.get_all().await.unwrap();
     assert_eq!(results.len(), 2);
@@ -91,7 +91,7 @@ async fn dao_get_all() {
 /// Test: count returns scalar value.
 #[tokio::test]
 async fn dao_count() {
-    let pool = setup_test_db().await;
+    let (pool, _dir) = setup_test_db().await;
     let recall_dao = RecallDao::new(pool);
     let count = recall_dao.count().await.unwrap();
     assert_eq!(count, 2);
@@ -117,7 +117,7 @@ trait NamedRecallDao {
 
 #[tokio::test]
 async fn dao_multi_param() {
-    let pool = setup_test_db().await;
+    let (pool, _dir) = setup_test_db().await;
     let named_dao = NamedRecallDao::new(pool);
     let result = named_dao
         .find_by_name_and_min_id("recall_a".to_string(), 0)
@@ -201,7 +201,7 @@ async fn dao_custom_type() {
 /// Test: error propagation — query on nonexistent table returns Error::Database.
 #[tokio::test]
 async fn dao_database_error() {
-    let pool = setup_test_db().await;
+    let (pool, _dir) = setup_test_db().await;
 
     let result: std::result::Result<Option<RecallEntity>, Error> = pool
         .query_one("SELECT id, name FROM nonexistent_table", vec![])
@@ -212,7 +212,7 @@ async fn dao_database_error() {
 /// Test: concurrent DAO calls via spawn_blocking don't deadlock.
 #[tokio::test]
 async fn dao_concurrent() {
-    let pool = setup_test_db().await;
+    let (pool, _dir) = setup_test_db().await;
 
     let dao1 = RecallDao::new(pool.clone());
     let dao2 = RecallDao::new(pool);

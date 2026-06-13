@@ -23,6 +23,9 @@ pub enum Error {
 
     /// A user-defined error with a boxed error chain.
     CustomBoxed(Box<dyn std::error::Error + Send + Sync>),
+
+    /// A pooled connection could not be acquired within the configured timeout.
+    AcquireTimeout,
 }
 
 impl Error {
@@ -58,6 +61,7 @@ impl fmt::Display for Error {
             Error::Database(err) => write!(f, "database error: {err}"),
             Error::Custom(msg) => write!(f, "{msg}"),
             Error::CustomBoxed(err) => write!(f, "{err}"),
+            Error::AcquireTimeout => write!(f, "timed out waiting for a pooled connection"),
         }
     }
 }
@@ -82,6 +86,7 @@ impl fmt::Debug for Error {
             Error::Database(err) => f.debug_tuple("Database").field(err).finish(),
             Error::Custom(msg) => f.debug_tuple("Custom").field(msg).finish(),
             Error::CustomBoxed(err) => f.debug_tuple("CustomBoxed").field(err).finish(),
+            Error::AcquireTimeout => f.debug_tuple("AcquireTimeout").finish(),
         }
     }
 }

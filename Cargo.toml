@@ -8,7 +8,7 @@ dao-macros = { path = "crates/dao-macros" }
 
 # External — versions frozen at current requirements except rusqlite (upgraded)
 rusqlite = { version = "0.40.1", features = ["bundled"] }
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
 async-trait = "0.1"
 syn = { version = "2", features = ["full"] }
 quote = "1"

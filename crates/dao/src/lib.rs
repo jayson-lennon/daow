@@ -14,7 +14,7 @@ pub use error::Error;
 pub use error::Result;
 pub use from_row::FromRow;
 pub use from_sql::FromSqlColumn;
-pub use pool::{Param, Pool};
+pub use pool::{Param, Pool, PoolBuilder};
 pub use row::{ColumnValue, Row};
 pub use to_row::ToRow;
 pub use to_sql::ToSqlColumn;
@@ -637,5 +637,30 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.rows_affected, 0);
+    }
+
+    /// Builder-applied pragmas must be observable on every checked-out connection.
+    /// This is the gap-#3 fix: `PRAGMA foreign_keys` is off-by-default per connection,
+    /// which silently breaks `ON DELETE CASCADE` unless the pool sets it.
+    #[tokio::test]
+    async fn pool_builder_pragma_applied() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("pragma.db");
+        let pool = Pool::builder()
+            .path(db_path.to_str().unwrap())
+            .max_size(4)
+            .pragma("foreign_keys", "ON")
+            .build()
+            .unwrap();
+
+        // Each query_one checks out a fresh-or-idle connection and runs against it.
+        // If the pragma were not applied, foreign_keys would be 0 here.
+        for i in 0..8 {
+            let fk: Option<i64> = pool.query_one("PRAGMA foreign_keys", vec![]).await.unwrap();
+            assert_eq!(
+                fk, Some(1),
+                "iteration {i}: foreign_keys pragma not applied to checked-out connection"
+            );
+        }
     }
 }
