@@ -10,6 +10,17 @@
 
 use dao::{async_trait, dao, Entity, ExecuteResult, Pool, Result};
 
+/// Build an in-memory pool and create the widgets schema.
+async fn setup_db() -> Result<Pool> {
+    let pool = Pool::open(":memory:")?;
+    pool.execute(
+        "CREATE TABLE widgets (id INTEGER PRIMARY KEY, name TEXT NOT NULL)",
+        vec![],
+    )
+    .await?;
+    Ok(pool)
+}
+
 #[derive(Debug, Clone, Entity)]
 #[dao(table = "widgets")]
 struct Widget {
@@ -37,9 +48,9 @@ impl dao::FromRow for CheckpointResult {
     }
 }
 
-/// A typed DAO where most methods are generated, but `checkpoint()` is
-/// hand-written (pass-through) because `PRAGMA wal_checkpoint(TRUNCATE)` isn't
-/// a SELECT/INSERT/UPDATE/DELETE-shaped statement.
+/// A typed DAO where most methods are generated, but `checkpoint()` and `count()`
+/// are hand-written (pass-through) because they aren't SELECT/INSERT/UPDATE/DELETE
+/// shaped statements the annotations can express.
 #[dao]
 #[async_trait]
 trait WidgetDao {
@@ -51,11 +62,11 @@ trait WidgetDao {
 
     /// Pass-through: hand-written body, no annotation. `self.query_one` resolves
     /// to the inherent helper that delegates to the underlying connection.
+    ///
+    /// NOTE: `PRAGMA wal_checkpoint` needs exclusive access and cannot run inside
+    /// an active transaction (SQLite returns SQLITE_LOCKED), so call this on a
+    /// pool-backed DAO, never via `.with(&tx)`.
     async fn checkpoint(&self) -> Result<Option<CheckpointResult>> {
-        // PRAGMA wal_checkpoint(TRUNCATE) returns (busy, log, checkpointed).
-        // NOTE: checkpoint needs exclusive access — it can NOT run inside an
-        // active transaction (SQLite returns SQLITE_LOCKED). Use it on a pool-backed
-        // DAO, not via `.with(&tx)`.
         self.query_one::<CheckpointResult>("PRAGMA wal_checkpoint(TRUNCATE)", vec![])
             .await
     }
@@ -71,13 +82,7 @@ trait WidgetDao {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let pool = Pool::open(":memory:")?;
-    pool.execute(
-        "CREATE TABLE widgets (id INTEGER PRIMARY KEY, name TEXT NOT NULL)",
-        vec![],
-    )
-    .await?;
-
+    let pool = setup_db().await?;
     let dao = WidgetDao::new(pool.clone());
 
     // 1. Generated method: insert + get.

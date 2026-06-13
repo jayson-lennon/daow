@@ -8,9 +8,9 @@
 
 use dao::{Pool, Result};
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    // Build a pool with pragmas applied to every freshly-opened connection.
+/// Build a pool with the pragmas we need (foreign keys + in-memory journal),
+/// then create a parent/child schema that relies on `ON DELETE CASCADE`.
+async fn setup_db() -> Result<Pool> {
     let pool = Pool::builder()
         .path(":memory:")
         .max_size(4)
@@ -23,7 +23,6 @@ async fn main() -> Result<()> {
     assert_eq!(fk, 1);
     println!("foreign_keys = {fk} (ON — cascades will fire)");
 
-    // A real write: create a parent/child pair with an FK and ON DELETE CASCADE.
     pool.execute(
         "CREATE TABLE parents (id INTEGER PRIMARY KEY)",
         vec![],
@@ -37,6 +36,13 @@ async fn main() -> Result<()> {
         vec![],
     )
     .await?;
+
+    Ok(pool)
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let pool = setup_db().await?;
 
     // Insert then delete the parent; the child should cascade-delete.
     pool.execute("INSERT INTO parents (id) VALUES (1)", vec![]).await?;

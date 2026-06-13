@@ -45,6 +45,21 @@ impl ToSqlColumn for AuthorId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ArticleId(i64);
+
+impl FromSqlColumn for ArticleId {
+    fn from_column(value: &ColumnValue) -> Result<Self> {
+        Ok(ArticleId(i64::from_column(value)?))
+    }
+}
+
+impl ToSqlColumn for ArticleId {
+    fn to_column(&self) -> Result<dao::Param> {
+        self.0.to_column()
+    }
+}
+
 #[derive(Debug, Clone, Entity)]
 #[dao(table = "blog_authors")]
 struct Author {
@@ -57,7 +72,7 @@ struct Author {
 #[dao(table = "blog_articles")]
 struct Article {
     #[dao(pk)]
-    id: AuthorId, // reuse AuthorId as a plain i64 PK for brevity
+    id: ArticleId,
     author_id: AuthorId,
     title: String,
     body: String,
@@ -100,7 +115,7 @@ async fn main() {
         articles
             .with(&tx)
             .publish(Article {
-                id: AuthorId(10),
+                id: ArticleId(10),
                 author_id: AuthorId(1),
                 title: "First post".into(),
                 body: "Hello world!".into(),
