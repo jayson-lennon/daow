@@ -13,21 +13,19 @@ use dao::{
     ToSqlColumn,
 };
 
-async fn setup_db() -> Pool {
-    let pool = Pool::open(":memory:").unwrap();
+async fn setup_db() -> Result<Pool> {
+    let pool = Pool::open(":memory:")?;
     pool.execute(
         "CREATE TABLE blog_authors (id INTEGER PRIMARY KEY, name TEXT)",
         vec![],
     )
-    .await
-    .unwrap();
+    .await?;
     pool.execute(
         "CREATE TABLE blog_articles (id INTEGER PRIMARY KEY, author_id INTEGER, title TEXT, body TEXT)",
         vec![],
     )
-    .await
-    .unwrap();
-    pool
+    .await?;
+    Ok(pool)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,22 +94,21 @@ trait ArticleDao {
 }
 
 #[tokio::main]
-async fn main() {
-    let pool = setup_db().await;
+async fn main() -> Result<()> {
+    let pool = setup_db().await?;
     let authors = AuthorDao::new(pool.clone());
     let articles = ArticleDao::new(pool.clone());
 
     // --- Commit path: both DAOs write inside one tx, both persist. ---
     {
-        let tx = pool.begin().await.unwrap();
+        let tx = pool.begin().await?;
         authors
             .with(&tx)
             .create(Author {
                 id: AuthorId(1),
                 name: "Alice".into(),
             })
-            .await
-            .unwrap();
+            .await?;
         articles
             .with(&tx)
             .publish(Article {
@@ -120,27 +117,26 @@ async fn main() {
                 title: "First post".into(),
                 body: "Hello world!".into(),
             })
-            .await
-            .unwrap();
-        tx.commit().await.unwrap(); // both rows persist
+            .await?;
+        tx.commit().await?; // both rows persist
     }
-    let all_authors = authors.list().await.unwrap();
+    let all_authors = authors.list().await?;
     assert_eq!(all_authors.len(), 1, "committed: author persisted");
     println!("[OK] multi-DAO tx committed: author + article persisted");
 
     // --- Rollback path: a mid-tx failure reverts all writes. ---
     {
-        let tx = pool.begin().await.unwrap();
+        let tx = pool.begin().await?;
         authors
             .with(&tx)
             .create(Author {
                 id: AuthorId(2),
                 name: "Bob".into(),
             })
-            .await
-            .unwrap();
+            .await?;
         // Insert a duplicate author id (1 already exists) -> PK violation -> error.
-        // The tx is dropped without commit -> rollback -> Bob (id=2) is undone too.
+        // The error is expected, so we discard it; the tx is dropped without commit
+        // -> rollback -> Bob (id=2) is undone too.
         let _ = authors
             .with(&tx)
             .create(Author {
@@ -150,7 +146,7 @@ async fn main() {
             .await;
         drop(tx);
     }
-    let all_authors = authors.list().await.unwrap();
+    let all_authors = authors.list().await?;
     assert_eq!(
         all_authors.len(),
         1,
@@ -159,4 +155,5 @@ async fn main() {
     println!("[OK] multi-DAO tx mid-failure rolled back: only committed row remains");
 
     println!("\nAll multi-DAO transaction checks passed!");
+    Ok(())
 }

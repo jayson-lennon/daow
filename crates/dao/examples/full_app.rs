@@ -11,25 +11,25 @@ use dao::{
 };
 
 /// Set up an in-memory database with schema.
-async fn setup_db() -> Pool {
-    let pool = Pool::open(":memory:").unwrap();
+async fn setup_db() -> Result<Pool> {
+    // Use shared-cache in-memory URI so all pooled connections see the same DB.
+    // (`:memory:` is per-connection, which breaks under tokio::join! with max_size > 1.)
+    let pool = Pool::open("file:demo?mode=memory&cache=shared")?;
 
     // Set up schema.
     pool.execute(
         "CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT, display_name TEXT)",
         vec![],
     )
-    .await
-    .unwrap();
+    .await?;
 
     pool.execute(
         "CREATE TABLE posts (id INTEGER PRIMARY KEY, slug TEXT, author_id INTEGER, title TEXT, body TEXT)",
         vec![],
     )
-    .await
-    .unwrap();
+    .await?;
 
-    pool
+    Ok(pool)
 }
 
 /// Strongly-typed user ID.
@@ -138,8 +138,8 @@ trait PostDao {
 }
 
 #[tokio::main]
-async fn main() {
-    let pool = setup_db().await;
+async fn main() -> Result<()> {
+    let pool = setup_db().await?;
     let user_dao = UserDao::new(pool.clone());
     let post_dao = PostDao::new(pool);
 
@@ -150,8 +150,7 @@ async fn main() {
             username: "alice".to_string(),
             display_name: "Alice".to_string(),
         })
-        .await
-        .unwrap();
+        .await?;
 
     user_dao
         .insert(User {
@@ -159,8 +158,7 @@ async fn main() {
             username: "bob".to_string(),
             display_name: "Bob".to_string(),
         })
-        .await
-        .unwrap();
+        .await?;
 
     // Insert posts via the DAO.
     post_dao
@@ -171,8 +169,7 @@ async fn main() {
             title: "Hello World".to_string(),
             body: Some("My first post!".to_string()),
         })
-        .await
-        .unwrap();
+        .await?;
 
     post_dao
         .insert(Post {
@@ -182,8 +179,7 @@ async fn main() {
             title: "Rust Basics".to_string(),
             body: None, // draft
         })
-        .await
-        .unwrap();
+        .await?;
 
     post_dao
         .insert(Post {
@@ -193,14 +189,10 @@ async fn main() {
             title: "Bob's Guide".to_string(),
             body: Some("Welcome!".to_string()),
         })
-        .await
-        .unwrap();
+        .await?;
 
     // Concurrent queries.
-    let (users, posts) = tokio::join!(user_dao.get_all(), post_dao.get_all(),);
-
-    let users = users.unwrap();
-    let posts = posts.unwrap();
+    let (users, posts) = tokio::try_join!(user_dao.get_all(), post_dao.get_all())?;
 
     println!("Users:");
     for u in &users {
@@ -223,22 +215,21 @@ async fn main() {
     // Slug newtype works.
     let post = post_dao
         .get_by_slug("hello-world".to_string())
-        .await
-        .unwrap()
+        .await?
         .unwrap();
     assert_eq!(post.slug, Slug("hello-world".to_string()));
 
     // Option<String> — NULL body.
     let draft = post_dao
         .get_by_slug("rust-basics".to_string())
-        .await
-        .unwrap()
+        .await?
         .unwrap();
     assert!(draft.body.is_none());
 
     // Author filter — uses UserId newtype.
-    let alice_posts = post_dao.get_by_author(UserId(1)).await.unwrap();
+    let alice_posts = post_dao.get_by_author(UserId(1)).await?;
     assert_eq!(alice_posts.len(), 2);
 
     println!("\nAll checks passed!");
+    Ok(())
 }

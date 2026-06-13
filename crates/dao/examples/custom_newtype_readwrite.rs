@@ -12,15 +12,14 @@ use dao::{
     Result, ToSqlColumn,
 };
 
-async fn setup_db() -> Pool {
-    let pool = Pool::open(":memory:").unwrap();
+async fn setup_db() -> Result<Pool> {
+    let pool = Pool::open(":memory:")?;
     pool.execute(
         "CREATE TABLE accounts (id INTEGER PRIMARY KEY, email TEXT, balance INTEGER)",
         vec![],
     )
-    .await
-    .unwrap();
-    pool
+    .await?;
+    Ok(pool)
 }
 
 /// Strongly-typed account ID.
@@ -104,8 +103,8 @@ trait AccountDao {
 }
 
 #[tokio::main]
-async fn main() {
-    let pool = setup_db().await;
+async fn main() -> Result<()> {
+    let pool = setup_db().await?;
     let dao = AccountDao::new(pool);
 
     // Create account with custom types
@@ -114,10 +113,10 @@ async fn main() {
         email: Email("alice@example.com".to_string()),
         balance: Cents(5000),
     };
-    dao.create(account.clone()).await.unwrap();
+    dao.create(account.clone()).await?;
 
     // Read back — FromSqlColumn converts columns to newtypes
-    let fetched = dao.get(AccountId(1)).await.unwrap().unwrap();
+    let fetched = dao.get(AccountId(1)).await?.unwrap();
     println!("Account: email={:?}, balance={:?}", fetched.email, fetched.balance);
     assert_eq!(fetched, account);
 
@@ -127,12 +126,13 @@ async fn main() {
         email: Email("alice@newdomain.com".to_string()),
         balance: Cents(7500),
     };
-    dao.update(updated.clone()).await.unwrap();
+    dao.update(updated.clone()).await?;
 
-    let after = dao.get(AccountId(1)).await.unwrap().unwrap();
+    let after = dao.get(AccountId(1)).await?.unwrap();
     assert_eq!(after.email, Email("alice@newdomain.com".to_string()));
     assert_eq!(after.balance, Cents(7500));
     println!("Updated: email={:?}, balance={:?}", after.email, after.balance);
 
     println!("\nAll checks passed!");
+    Ok(())
 }

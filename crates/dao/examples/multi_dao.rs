@@ -12,21 +12,19 @@ use dao::{
     ToSqlColumn,
 };
 
-async fn setup_db() -> Pool {
-    let pool = Pool::open(":memory:").unwrap();
+async fn setup_db() -> Result<Pool> {
+    let pool = Pool::open(":memory:")?;
     pool.execute(
         "CREATE TABLE blog_authors (id INTEGER PRIMARY KEY, name TEXT)",
         vec![],
     )
-    .await
-    .unwrap();
+    .await?;
     pool.execute(
         "CREATE TABLE blog_articles (id INTEGER PRIMARY KEY, author_id INTEGER, title TEXT, body TEXT)",
         vec![],
     )
-    .await
-    .unwrap();
-    pool
+    .await?;
+    Ok(pool)
 }
 
 /// Strongly-typed author ID.
@@ -113,14 +111,14 @@ trait ArticleDao {
 }
 
 #[tokio::main]
-async fn main() {
-    let pool = setup_db().await;
+async fn main() -> Result<()> {
+    let pool = setup_db().await?;
     let authors = AuthorDao::new(pool.clone());
     let articles = ArticleDao::new(pool);
 
     // Create authors
-    authors.create(Author { id: AuthorId(1), name: "Alice".into() }).await.unwrap();
-    authors.create(Author { id: AuthorId(2), name: "Bob".into() }).await.unwrap();
+    authors.create(Author { id: AuthorId(1), name: "Alice".into() }).await?;
+    authors.create(Author { id: AuthorId(2), name: "Bob".into() }).await?;
 
     // Publish articles
     articles.publish(Article {
@@ -128,24 +126,24 @@ async fn main() {
         author_id: AuthorId(1),
         title: "First post".into(),
         body: "Hello world!".into(),
-    }).await.unwrap();
+    }).await?;
 
     articles.publish(Article {
         id: ArticleId(2),
         author_id: AuthorId(1),
         title: "Rust tips".into(),
         body: "Use cargo clippy.".into(),
-    }).await.unwrap();
+    }).await?;
 
     articles.publish(Article {
         id: ArticleId(3),
         author_id: AuthorId(2),
         title: "Bob here".into(),
         body: "Hi everyone.".into(),
-    }).await.unwrap();
+    }).await?;
 
     // List Alice's articles
-    let alice_posts = articles.by_author(AuthorId(1)).await.unwrap();
+    let alice_posts = articles.by_author(AuthorId(1)).await?;
     println!("Alice's articles:");
     for a in &alice_posts {
         println!("  [{}] {}", a.id.0, a.title);
@@ -158,17 +156,18 @@ async fn main() {
         author_id: AuthorId(1),
         title: "First post (edited)".into(),
         body: "Updated content.".into(),
-    }).await.unwrap();
+    }).await?;
 
     // Delete Bob's articles then delete Bob
-    let deleted = articles.delete_by_author(AuthorId(2)).await.unwrap();
+    let deleted = articles.delete_by_author(AuthorId(2)).await?;
     println!("\nDeleted {} article(s) by Bob", deleted.rows_affected);
     assert_eq!(deleted.rows_affected, 1);
 
-    authors.delete(Author { id: AuthorId(2), name: "Bob".into() }).await.unwrap();
-    let remaining = authors.list().await.unwrap();
+    authors.delete(Author { id: AuthorId(2), name: "Bob".into() }).await?;
+    let remaining = authors.list().await?;
     assert_eq!(remaining.len(), 1);
     println!("Remaining authors: {:?}", remaining);
 
     println!("\nAll checks passed!");
+    Ok(())
 }

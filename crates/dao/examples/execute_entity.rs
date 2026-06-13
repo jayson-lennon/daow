@@ -13,15 +13,14 @@ use dao::{
     ToSqlColumn,
 };
 
-async fn setup_db() -> Pool {
-    let pool = Pool::open(":memory:").unwrap();
+async fn setup_db() -> Result<Pool> {
+    let pool = Pool::open(":memory:")?;
     pool.execute(
         "CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price REAL)",
         vec![],
     )
-    .await
-    .unwrap();
-    pool
+    .await?;
+    Ok(pool)
 }
 
 /// Strongly-typed product ID.
@@ -61,8 +60,8 @@ trait ProductDao {
 }
 
 #[tokio::main]
-async fn main() {
-    let pool = setup_db().await;
+async fn main() -> Result<()> {
+    let pool = setup_db().await?;
     let dao = ProductDao::new(pool);
 
     // Insert
@@ -71,11 +70,11 @@ async fn main() {
         name: "Widget".to_string(),
         price: 9.99,
     };
-    let result = dao.upsert(widget.clone()).await.unwrap();
+    let result = dao.upsert(widget.clone()).await?;
     println!("Inserted: rows_affected={}", result.rows_affected);
 
     // Verify
-    let fetched = dao.get(ProductId(1)).await.unwrap().unwrap();
+    let fetched = dao.get(ProductId(1)).await?.unwrap();
     println!("Found: {:?}", fetched);
     assert_eq!(fetched, widget);
 
@@ -85,11 +84,12 @@ async fn main() {
         name: "Widget".to_string(),
         price: 19.99,
     };
-    dao.upsert(updated.clone()).await.unwrap();
+    dao.upsert(updated.clone()).await?;
 
-    let after = dao.get(ProductId(1)).await.unwrap().unwrap();
+    let after = dao.get(ProductId(1)).await?.unwrap();
     println!("After upsert: {:?}", after);
     assert_eq!(after.price, 19.99);
 
     println!("\nAll checks passed!");
+    Ok(())
 }

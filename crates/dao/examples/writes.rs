@@ -9,17 +9,16 @@ use dao::{
     ToSqlColumn,
 };
 
-async fn setup_db() -> Pool {
-    let pool = Pool::open(":memory:").unwrap();
+async fn setup_db() -> Result<Pool> {
+    let pool = Pool::open(":memory:")?;
 
     pool.execute(
         "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, price REAL)",
         vec![],
     )
-    .await
-    .unwrap();
+    .await?;
 
-    pool
+    Ok(pool)
 }
 
 /// Strongly-typed item ID.
@@ -79,8 +78,8 @@ trait ItemDao {
 }
 
 #[tokio::main]
-async fn main() {
-    let pool = setup_db().await;
+async fn main() -> Result<()> {
+    let pool = setup_db().await?;
     let dao = ItemDao::new(pool);
 
     // --- #[insert]: generated SQL ---
@@ -90,8 +89,7 @@ async fn main() {
             name: "Widget".to_string(),
             price: 9.99,
         })
-        .await
-        .unwrap();
+        .await?;
     println!(
         "Insert: rows_affected={}, last_insert_rowid={}",
         r.rows_affected, r.last_insert_rowid
@@ -102,19 +100,17 @@ async fn main() {
         name: "Gadget".to_string(),
         price: 14.99,
     })
-    .await
-    .unwrap();
+    .await?;
 
     dao.insert(Item {
         id: ItemId(3),
         name: "Doohickey".to_string(),
         price: 0.0,
     })
-    .await
-    .unwrap();
+    .await?;
 
     println!("\nAfter 3 inserts:");
-    for item in dao.get_all().await.unwrap() {
+    for item in dao.get_all().await? {
         println!("  {} @${:.2}", item.name, item.price);
     }
 
@@ -125,18 +121,17 @@ async fn main() {
             name: "Widget Pro".to_string(),
             price: 19.99,
         })
-        .await
-        .unwrap();
+        .await?;
     println!("\nUpdate: rows_affected={}", r.rows_affected);
 
-    let updated = dao.get_by_id(ItemId(1)).await.unwrap().unwrap();
+    let updated = dao.get_by_id(ItemId(1)).await?.unwrap();
     println!("  Updated: {} @${:.2}", updated.name, updated.price);
 
     // --- #[execute]: user-provided SQL ---
-    let r = dao.set_price(99.99, ItemId(2)).await.unwrap();
+    let r = dao.set_price(99.99, ItemId(2)).await?;
     println!("\nExecute (set_price): rows_affected={}", r.rows_affected);
 
-    let gadget = dao.get_by_id(ItemId(2)).await.unwrap().unwrap();
+    let gadget = dao.get_by_id(ItemId(2)).await?.unwrap();
     assert_eq!(gadget.price, 99.99);
     println!("  Gadget price is now ${:.2}", gadget.price);
 
@@ -147,15 +142,15 @@ async fn main() {
             name: "Doohickey".to_string(),
             price: 0.0,
         })
-        .await
-        .unwrap();
+        .await?;
     println!("\nDelete: rows_affected={}", r.rows_affected);
-    assert!(dao.get_by_id(ItemId(3)).await.unwrap().is_none());
+    assert!(dao.get_by_id(ItemId(3)).await?.is_none());
 
     // --- #[execute]: delete all ---
-    let r = dao.delete_all().await.unwrap();
+    let r = dao.delete_all().await?;
     println!("\nDelete all: rows_affected={}", r.rows_affected);
-    assert_eq!(dao.count().await.unwrap(), 0);
+    assert_eq!(dao.count().await?, 0);
 
     println!("\nAll write annotations demonstrated!");
+    Ok(())
 }

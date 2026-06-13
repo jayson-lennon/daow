@@ -11,17 +11,16 @@ use dao::{
 };
 
 /// Set up an in-memory database with schema.
-async fn setup_db() -> Pool {
-    let pool = Pool::open(":memory:").unwrap();
+async fn setup_db() -> Result<Pool> {
+    let pool = Pool::open(":memory:")?;
 
     pool.execute(
         "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)",
         vec![],
     )
-    .await
-    .unwrap();
+    .await?;
 
-    pool
+    Ok(pool)
 }
 
 /// Strongly-typed user ID — prevents mixing up with other i64 values.
@@ -72,8 +71,8 @@ trait UserDao {
 }
 
 #[tokio::main]
-async fn main() {
-    let pool = setup_db().await;
+async fn main() -> Result<()> {
+    let pool = setup_db().await?;
     let user_dao = UserDao::new(pool);
 
     // Insert users via the DAO.
@@ -83,8 +82,7 @@ async fn main() {
             name: "Alice".to_string(),
             email: "alice@example.com".to_string(),
         })
-        .await
-        .unwrap();
+        .await?;
 
     user_dao
         .insert(User {
@@ -92,22 +90,21 @@ async fn main() {
             name: "Bob".to_string(),
             email: "bob@example.com".to_string(),
         })
-        .await
-        .unwrap();
+        .await?;
 
     // Get by ID — note the strongly-typed UserId.
-    let user = user_dao.get_by_id(UserId(1)).await.unwrap();
+    let user = user_dao.get_by_id(UserId(1)).await?;
     println!("Found user: {:?}", user);
 
     // Get all.
-    let users = user_dao.get_all().await.unwrap();
+    let users = user_dao.get_all().await?;
     println!("All users:");
     for u in &users {
         println!("  {} @{}", u.name, u.email);
     }
 
     // Count.
-    let count = user_dao.count().await.unwrap();
+    let count = user_dao.count().await?;
     println!("Total users: {}", count);
 
     // Update a user.
@@ -117,10 +114,9 @@ async fn main() {
             name: "Alice Updated".to_string(),
             email: "alice_new@example.com".to_string(),
         })
-        .await
-        .unwrap();
+        .await?;
 
-    let updated = user_dao.get_by_id(UserId(1)).await.unwrap().unwrap();
+    let updated = user_dao.get_by_id(UserId(1)).await?.unwrap();
     println!("Updated user: {:?}", updated);
     assert_eq!(updated.name, "Alice Updated");
 
@@ -131,15 +127,15 @@ async fn main() {
             name: "Bob".to_string(),
             email: "bob@example.com".to_string(),
         })
-        .await
-        .unwrap();
+        .await?;
 
-    let remaining = user_dao.get_all().await.unwrap();
+    let remaining = user_dao.get_all().await?;
     assert_eq!(remaining.len(), 1);
 
     // Missing user returns None.
-    let missing = user_dao.get_by_id(UserId(999)).await.unwrap();
+    let missing = user_dao.get_by_id(UserId(999)).await?;
     assert!(missing.is_none());
 
     println!("\nAll checks passed!");
+    Ok(())
 }

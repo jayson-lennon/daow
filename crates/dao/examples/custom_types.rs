@@ -12,15 +12,14 @@ use dao::{
 };
 
 /// Set up an in-memory database with schema and sample data.
-async fn setup_db() -> Pool {
-    let pool = Pool::open(":memory:").unwrap();
+async fn setup_db() -> Result<Pool> {
+    let pool = Pool::open(":memory:")?;
 
     pool.query_all::<i64>(
         "CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price INTEGER)",
         vec![],
     )
-    .await
-    .unwrap();
+    .await?;
 
     pool.query_all::<i64>(
         "INSERT INTO products (id, name, price) VALUES (?, ?, ?)",
@@ -30,8 +29,7 @@ async fn setup_db() -> Pool {
             Box::new(999i64),
         ],
     )
-    .await
-    .unwrap();
+    .await?;
 
     pool.query_all::<i64>(
         "INSERT INTO products (id, name, price) VALUES (?, ?, ?)",
@@ -41,24 +39,21 @@ async fn setup_db() -> Pool {
             Box::new(1499i64),
         ],
     )
-    .await
-    .unwrap();
+    .await?;
 
     pool.query_all::<i64>(
         "CREATE TABLE customers (id INTEGER PRIMARY KEY, email_address TEXT)",
         vec![],
     )
-    .await
-    .unwrap();
+    .await?;
 
     pool.query_all::<i64>(
         "INSERT INTO customers (id, email_address) VALUES (?, ?)",
         vec![Box::new(1i64), Box::new("alice@example.com".to_string())],
     )
-    .await
-    .unwrap();
+    .await?;
 
-    pool
+    Ok(pool)
 }
 
 /// Strongly-typed product ID.
@@ -151,26 +146,27 @@ trait CustomerDao {
 }
 
 #[tokio::main]
-async fn main() {
-    let pool = setup_db().await;
+async fn main() -> Result<()> {
+    let pool = setup_db().await?;
     let products = ProductDao::new(pool.clone());
     let customers = CustomerDao::new(pool);
 
     // Custom type: Cents
-    let widget = products.get_by_id(ProductId(1)).await.unwrap().unwrap();
+    let widget = products.get_by_id(ProductId(1)).await?.unwrap();
     println!("Product: {:?} — price = {:?}", widget.name, widget.price);
     assert_eq!(widget.price, Cents(999));
 
     // Custom type: Email with column rename
-    let alice = customers.get_by_id(CustomerId(1)).await.unwrap().unwrap();
+    let alice = customers.get_by_id(CustomerId(1)).await?.unwrap();
     println!("Customer email: {:?}", alice.email);
     assert_eq!(alice.email, Email("alice@example.com".to_string()));
 
     // All products ordered by price
-    let all = products.get_all().await.unwrap();
+    let all = products.get_all().await?;
     assert_eq!(all.len(), 2);
     assert_eq!(all[0].price, Cents(999));
     assert_eq!(all[1].price, Cents(1499));
 
     println!("\nAll checks passed!");
+    Ok(())
 }
