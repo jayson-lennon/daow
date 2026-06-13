@@ -7,7 +7,7 @@ edition = "2021"
 proc-macro = true
 
 [dependencies]
-syn = { version = "2", features = ["full"] }
-quote = "1"
-proc-macro2 = "1"
-rusqlite = { version = "0.31", features = ["bundled"] }
+syn.workspace = true
+quote.workspace = true
+proc-macro2.workspace = true
+rusqlite.workspace = true
