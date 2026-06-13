@@ -5,6 +5,7 @@
 //!
 //! Run with: cargo run --example custom_types
 
+#![allow(dead_code)]
 use dao::{
     async_trait, dao, error::Error, row::ColumnValue, Entity, FromSqlColumn, Pool, Result,
     ToSqlColumn,
