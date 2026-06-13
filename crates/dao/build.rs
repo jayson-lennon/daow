@@ -15,8 +15,10 @@ fn main() {
     let conn = rusqlite::Connection::open(&db_path)
         .unwrap_or_else(|e| panic!("Failed to create {}: {e}", db_path.display()));
 
-    // Tables used by compile-time #[query] validation (tests + examples + compile-fail)
-    // NOTE: items needs price column for entity_derive tests
+    // Tables used by compile-time #[query] validation (tests + examples + compile-fail).
+    // NOTE: items needs price column for entity_derive tests.
+    // Some tables are also created at runtime in :memory: DBs by their owning unit, but the
+    // proc-macro validates SQL against THIS build-time DB, so every referenced table must exist here.
     conn.execute_batch(
         "CREATE TABLE recalls (id INTEGER PRIMARY KEY, name TEXT);
          CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, price REAL);
@@ -25,7 +27,11 @@ fn main() {
          CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT, display_name TEXT, username TEXT);
          CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price INTEGER);
          CREATE TABLE customers (id INTEGER PRIMARY KEY, email_address TEXT);
-         CREATE TABLE posts (id INTEGER PRIMARY KEY, slug TEXT, author_id INTEGER, title TEXT, body TEXT);"
+         CREATE TABLE posts (id INTEGER PRIMARY KEY, slug TEXT, author_id INTEGER, title TEXT, body TEXT);
+         CREATE TABLE articles (id INTEGER PRIMARY KEY, slug TEXT, title TEXT);
+         CREATE TABLE accounts (id INTEGER PRIMARY KEY, email TEXT, balance INTEGER);
+         CREATE TABLE blog_authors (id INTEGER PRIMARY KEY, name TEXT);
+         CREATE TABLE blog_articles (id INTEGER PRIMARY KEY, author_id INTEGER, title TEXT, body TEXT);"
     )
     .expect("Failed to create schema");
 
