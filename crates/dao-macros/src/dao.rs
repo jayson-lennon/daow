@@ -13,6 +13,8 @@ enum MethodKind {
     Update,
     Delete,
     Execute,
+    /// Hand-written body, no annotation. Forwarded verbatim.
+    PassThrough,
 }
 
 /// Describes a single method parsed from the trait.
@@ -31,6 +33,9 @@ struct DaoMethod {
     full_return_type: Type,
     /// The number of placeholders in the SQL (set during validation for Execute methods).
     sql_param_count: Option<usize>,
+    /// Verbatim body for a pass-through method (no annotation, hand-written).
+    /// `None` for annotated methods (whose body the macro generates).
+    body: Option<syn::Block>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -107,6 +112,22 @@ pub fn dao_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     _lt: ::std::marker::PhantomData,
                 }
             }
+
+            /// Pass-through helper: run a query returning a single row. Available so
+            /// hand-written method bodies can call `self.query_one::<T>(sql, params)?`.
+            pub async fn query_one<T: dao::FromRow + Send + 'static>(&self, sql: &str, params: Vec<dao::Param>) -> dao::Result<Option<T>> {
+                self.conn.query_one(sql, params).await
+            }
+
+            /// Pass-through helper: run a query returning many rows.
+            pub async fn query_all<T: dao::FromRow + Send + 'static>(&self, sql: &str, params: Vec<dao::Param>) -> dao::Result<Vec<T>> {
+                self.conn.query_all(sql, params).await
+            }
+
+            /// Pass-through helper: run an execute (INSERT/UPDATE/DELETE/DDL).
+            pub async fn execute(&self, sql: &str, params: Vec<dao::Param>) -> dao::Result<dao::ExecuteResult> {
+                self.conn.execute(sql, params).await
+            }
         }
 
         /// Transaction-scoped view of [`#struct_name`]. Borrows the [`dao::Transaction`] for
@@ -117,6 +138,23 @@ pub fn dao_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
         pub struct #view_name<'a> {
             conn: &'a dao::Transaction,
             _lt: ::std::marker::PhantomData<&'a ()>,
+        }
+
+        impl<'a> #view_name<'a> {
+            /// Pass-through helper bound to the borrowed transaction.
+            pub async fn query_one<T: dao::FromRow + Send + 'static>(&self, sql: &str, params: Vec<dao::Param>) -> dao::Result<Option<T>> {
+                self.conn.query_one(sql, params).await
+            }
+
+            /// Pass-through helper bound to the borrowed transaction.
+            pub async fn query_all<T: dao::FromRow + Send + 'static>(&self, sql: &str, params: Vec<dao::Param>) -> dao::Result<Vec<T>> {
+                self.conn.query_all(sql, params).await
+            }
+
+            /// Pass-through helper bound to the borrowed transaction.
+            pub async fn execute(&self, sql: &str, params: Vec<dao::Param>) -> dao::Result<dao::ExecuteResult> {
+                self.conn.execute(sql, params).await
+            }
         }
 
         #(#outer_attrs)*
@@ -147,19 +185,41 @@ fn strip_dao_attrs(trait_def: &ItemTrait, new_name: &syn::Ident) -> proc_macro2:
                     && !attr.path().is_ident("delete")
                     && !attr.path().is_ident("execute")
             });
+
+            // Strip default bodies, converting pass-through methods into required
+            // trait methods. This matters because a trait's default body runs
+            // against the abstract `Self`, which cannot see the inherent
+            // `query_one`/`query_all`/`execute` helpers on the concrete impl struct.
+            // (Annotated methods with a body are already rejected in `extract_methods`,
+            // so every body here belongs to a pass-through method.) The impl block
+            // re-supplies the body against the concrete `Self`.
+            method.default = None;
         }
     }
 
     quote! { #trait_clone }
 }
 
-/// Extract all annotated methods from the trait.
+/// Extract all methods from the trait: annotated methods (generated bodies) and
+/// pass-through methods (hand-written bodies, no annotation).
+///
+/// A method with BOTH an annotation and a body is an error.
 fn extract_methods(trait_def: &ItemTrait) -> syn::Result<Vec<DaoMethod>> {
     let mut methods = Vec::new();
 
     for item in &trait_def.items {
         if let TraitItem::Fn(method) = item {
+            let has_body = method.default.is_some();
             if let Some(extracted) = extract_method_kind(method)? {
+                // Annotated method. A body too is a contradictory instruction.
+                if has_body {
+                    return Err(syn::Error::new_spanned(
+                        method,
+                        "DAO method has both an annotation and a body. \n\
+                         Annotations auto-generate the body — remove the annotation to use \
+                         a pass-through body, or remove the body to let the annotation generate it.",
+                    ));
+                }
                 let (params, return_kind, full_return_type) = analyze_signature(method)?;
                 methods.push(DaoMethod {
                     ident: method.sig.ident.clone(),
@@ -169,6 +229,20 @@ fn extract_methods(trait_def: &ItemTrait) -> syn::Result<Vec<DaoMethod>> {
                     return_kind,
                     full_return_type,
                     sql_param_count: None,
+                    body: None,
+                });
+            } else if has_body {
+                // Pass-through: hand-written body, no annotation.
+                let (params, return_kind, full_return_type) = analyze_signature(method)?;
+                methods.push(DaoMethod {
+                    ident: method.sig.ident.clone(),
+                    method_kind: MethodKind::PassThrough,
+                    sql: None,
+                    params,
+                    return_kind,
+                    full_return_type,
+                    sql_param_count: None,
+                    body: method.default.clone(),
                 });
             }
         }
@@ -378,13 +452,10 @@ fn count_effective_params(params: &[syn::PatType]) -> usize {
         .map(|p| match &*p.pat {
             syn::Pat::Ident(_) => 1,
             syn::Pat::Struct(s) => s.fields.len(),
-            _ => panic!(
-                "expected identifiable or struct destructured parameter"
-            ),
+            _ => panic!("expected identifiable or struct destructured parameter"),
         })
         .sum()
 }
-
 
 /// Validate SQL statements at compile time for Query and Execute methods.
 fn validate_sql(methods: &mut [DaoMethod]) -> syn::Result<()> {
@@ -474,6 +545,7 @@ fn generate_method(method: &DaoMethod) -> proc_macro2::TokenStream {
         MethodKind::Update => generate_update_method(method),
         MethodKind::Delete => generate_delete_method(method),
         MethodKind::Execute => generate_execute_method(method),
+        MethodKind::PassThrough => generate_passthrough_method(method),
     }
 }
 
@@ -607,6 +679,23 @@ fn get_param_name(method: &DaoMethod, index: usize) -> &syn::Ident {
     }
 }
 
+/// Generate a pass-through method: forward the user-written body verbatim.
+/// The body can call `self.query_one::<T>(sql, params)?` / `self.query_all::<T>` /
+/// `self.execute` (inherent helpers added to the generated struct and view).
+fn generate_passthrough_method(method: &DaoMethod) -> proc_macro2::TokenStream {
+    let ident = &method.ident;
+    let full_return_type = &method.full_return_type;
+    let param_tokens = generate_param_tokens(method);
+    let body = method
+        .body
+        .as_ref()
+        .expect("pass-through method must have a body");
+    quote! {
+        async fn #ident(&self, #(#param_tokens),*) -> #full_return_type
+            #body
+    }
+}
+
 /// Generate parameter tokens for the function signature.
 fn generate_param_tokens(method: &DaoMethod) -> Vec<proc_macro2::TokenStream> {
     method
@@ -631,15 +720,17 @@ fn generate_param_bindings(method: &DaoMethod) -> proc_macro2::TokenStream {
                 let ident = &pat_ident.ident;
                 vec![quote! { dao::ToSqlColumn::to_column(&#ident)? }]
             }
-            syn::Pat::Struct(pat_struct) => {
-                pat_struct.fields.iter().map(|field_pat| {
+            syn::Pat::Struct(pat_struct) => pat_struct
+                .fields
+                .iter()
+                .map(|field_pat| {
                     let binding = match &*field_pat.pat {
                         syn::Pat::Ident(ident) => &ident.ident,
                         _ => panic!("expected identifiable field binding in struct pattern"),
                     };
                     quote! { dao::ToSqlColumn::to_column(&#binding)? }
-                }).collect()
-            }
+                })
+                .collect(),
             _ => panic!("expected identifiable or struct destructured parameter"),
         })
         .collect();

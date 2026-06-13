@@ -31,7 +31,8 @@ fn main() {
          CREATE TABLE articles (id INTEGER PRIMARY KEY, slug TEXT, title TEXT);
          CREATE TABLE accounts (id INTEGER PRIMARY KEY, email TEXT, balance INTEGER);
          CREATE TABLE blog_authors (id INTEGER PRIMARY KEY, name TEXT);
-         CREATE TABLE blog_articles (id INTEGER PRIMARY KEY, author_id INTEGER, title TEXT, body TEXT);"
+         CREATE TABLE blog_articles (id INTEGER PRIMARY KEY, author_id INTEGER, title TEXT, body TEXT);
+         CREATE TABLE widgets (id INTEGER PRIMARY KEY, name TEXT);"
     )
     .expect("Failed to create schema");
 }

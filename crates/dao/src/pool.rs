@@ -207,7 +207,7 @@ impl Pool {
         F: FnOnce(&mut rusqlite::Connection) -> Result<R> + Send + 'static,
     {
         let mut conn = self.acquire().await?;
-        tokio::task::spawn_blocking(move || f(&mut *conn))
+        tokio::task::spawn_blocking(move || f(&mut conn))
             .await
             .map_err(|e| Error::custom(format!("spawn_blocking panicked: {e}")))?
     }
@@ -396,11 +396,14 @@ impl Transaction {
                 .inner
                 .lock()
                 .map_err(|_| Error::custom("transaction lock poisoned"))?;
-            guard.conn.take().ok_or_else(|| Error::custom("transaction connection missing"))?
+            guard
+                .conn
+                .take()
+                .ok_or_else(|| Error::custom("transaction connection missing"))?
         };
         let (result, conn) = tokio::task::spawn_blocking(move || {
             let mut conn = conn;
-            let result = f(&mut *conn);
+            let result = f(&mut conn);
             (result, conn)
         })
         .await

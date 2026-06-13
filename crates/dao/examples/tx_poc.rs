@@ -20,7 +20,8 @@
 use dao::{ExecuteResult, Pool};
 use std::time::Duration;
 
-const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS accounts (id INTEGER PRIMARY KEY, balance INTEGER NOT NULL)";
+const SCHEMA: &str =
+    "CREATE TABLE IF NOT EXISTS accounts (id INTEGER PRIMARY KEY, balance INTEGER NOT NULL)";
 
 fn fresh_pool() -> (Pool, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
@@ -43,12 +44,9 @@ async fn main() {
     {
         let (pool, _dir) = fresh_pool();
         pool.execute(SCHEMA, vec![]).await.unwrap();
-        pool.execute(
-            "INSERT INTO accounts (id, balance) VALUES (1, 100)",
-            vec![],
-        )
-        .await
-        .unwrap();
+        pool.execute("INSERT INTO accounts (id, balance) VALUES (1, 100)", vec![])
+            .await
+            .unwrap();
         let bal: Option<i64> = pool
             .query_one("SELECT balance FROM accounts WHERE id = 1", vec![])
             .await
@@ -65,16 +63,16 @@ async fn main() {
         // held connection. If anything between fails, both revert.
         pool.with_conn(|conn| {
             let tx = conn.transaction()?;
+            tx.execute("INSERT INTO accounts (id, balance) VALUES (1, 100)", [])?;
+            tx.execute("INSERT INTO accounts (id, balance) VALUES (2, 0)", [])?;
             tx.execute(
-                "INSERT INTO accounts (id, balance) VALUES (1, 100)",
+                "UPDATE accounts SET balance = balance - 50 WHERE id = 1",
                 [],
             )?;
             tx.execute(
-                "INSERT INTO accounts (id, balance) VALUES (2, 0)",
+                "UPDATE accounts SET balance = balance + 50 WHERE id = 2",
                 [],
             )?;
-            tx.execute("UPDATE accounts SET balance = balance - 50 WHERE id = 1", [])?;
-            tx.execute("UPDATE accounts SET balance = balance + 50 WHERE id = 2", [])?;
             tx.commit()?;
             Ok::<_, dao::Error>(())
         })
@@ -99,18 +97,12 @@ async fn main() {
         pool.execute(SCHEMA, vec![]).await.unwrap();
         {
             let tx = pool.begin().await.unwrap();
-            tx.execute(
-                "INSERT INTO accounts (id, balance) VALUES (1, 7)",
-                vec![],
-            )
-            .await
-            .unwrap();
-            tx.execute(
-                "INSERT INTO accounts (id, balance) VALUES (2, 9)",
-                vec![],
-            )
-            .await
-            .unwrap();
+            tx.execute("INSERT INTO accounts (id, balance) VALUES (1, 7)", vec![])
+                .await
+                .unwrap();
+            tx.execute("INSERT INTO accounts (id, balance) VALUES (2, 9)", vec![])
+                .await
+                .unwrap();
             tx.commit().await.unwrap();
         }
         let count: Option<i64> = pool
@@ -127,12 +119,9 @@ async fn main() {
         pool.execute(SCHEMA, vec![]).await.unwrap();
         {
             let tx = pool.begin().await.unwrap();
-            tx.execute(
-                "INSERT INTO accounts (id, balance) VALUES (1, 999)",
-                vec![],
-            )
-            .await
-            .unwrap();
+            tx.execute("INSERT INTO accounts (id, balance) VALUES (1, 999)", vec![])
+                .await
+                .unwrap();
             // Deliberately do NOT commit — drop triggers rollback.
         }
         let count: Option<i64> = pool
@@ -148,28 +137,19 @@ async fn main() {
         let (pool, _dir) = fresh_pool();
         pool.execute(SCHEMA, vec![]).await.unwrap();
         // Seed id=1 so the second insert (also id=1) fails with a PK violation.
-        pool.execute(
-            "INSERT INTO accounts (id, balance) VALUES (1, 5)",
-            vec![],
-        )
-        .await
-        .unwrap();
+        pool.execute("INSERT INTO accounts (id, balance) VALUES (1, 5)", vec![])
+            .await
+            .unwrap();
 
         let result = async {
             let tx = pool.begin().await.unwrap();
             // This one would succeed on its own...
-            tx.execute(
-                "INSERT INTO accounts (id, balance) VALUES (2, 8)",
-                vec![],
-            )
-            .await
-            .unwrap();
+            tx.execute("INSERT INTO accounts (id, balance) VALUES (2, 8)", vec![])
+                .await
+                .unwrap();
             // ...but a duplicate PK here fails, and the whole tx must revert.
             let res: Result<ExecuteResult, dao::Error> = tx
-                .execute(
-                    "INSERT INTO accounts (id, balance) VALUES (1, 11)",
-                    vec![],
-                )
+                .execute("INSERT INTO accounts (id, balance) VALUES (1, 11)", vec![])
                 .await;
             if res.is_err() {
                 // tx drops here -> rollback; id=2's insert is undone.
@@ -179,7 +159,7 @@ async fn main() {
         }
         .await;
 
-        let _ = result;
+        let _: () = result;
         let count: Option<i64> = pool
             .query_one("SELECT COUNT(*) FROM accounts", vec![])
             .await
