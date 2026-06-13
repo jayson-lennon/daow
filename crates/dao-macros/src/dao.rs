@@ -79,21 +79,53 @@ pub fn dao_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
     // Re-emit the original trait with all DAO attributes stripped and renamed to {Name}Trait
     let clean_trait = strip_dao_attrs(&input, &renamed_trait);
 
+    let view_name = syn::Ident::new(&format!("{}View", trait_name_str), trait_name.span());
+
     let expanded = quote! {
         #clean_trait
 
         pub struct #struct_name {
-            pool: dao::Pool,
+            conn: dao::Conn,
         }
 
         impl #struct_name {
-            pub fn new(pool: dao::Pool) -> Self {
-                Self { pool }
+            /// Construct from anything that converts into a [`dao::Conn`] — typically a
+            /// [`dao::Pool`] (autocommit) but a [`dao::Transaction`] is also accepted.
+            pub fn new(conn: impl ::std::convert::Into<dao::Conn>) -> Self {
+                Self { conn: conn.into() }
             }
+
+            /// Return a lifetime-tied view bound to `tx`'s connection. Method calls on
+            /// the view run inside the transaction. The view borrows `self` and `tx` for
+            /// its whole lifetime (`'a`), which is what lets the borrow checker enforce:
+            ///   (a) the view cannot outlive the transaction (E0597), and
+            ///   (b) `tx.commit()` (which takes `tx` by value) cannot run while a view is
+            ///       live (E0505).
+            pub fn with<'a>(&'a self, tx: &'a dao::Transaction) -> #view_name<'a> {
+                #view_name {
+                    conn: tx,
+                    _lt: ::std::marker::PhantomData,
+                }
+            }
+        }
+
+        /// Transaction-scoped view of [`#struct_name`]. Borrows the [`dao::Transaction`] for
+        /// its whole lifetime (`'a`), so it cannot outlive the transaction (E0597) and it
+        /// blocks `tx.commit()` (which takes `tx` by value) while alive (E0505). Methods run
+        /// on the borrowed transaction — no clone, so no spurious rollback when a temporary
+        /// view drops.
+        pub struct #view_name<'a> {
+            conn: &'a dao::Transaction,
+            _lt: ::std::marker::PhantomData<&'a ()>,
         }
 
         #(#outer_attrs)*
         impl #renamed_trait for #struct_name {
+            #(#generated_methods)*
+        }
+
+        #(#outer_attrs)*
+        impl<'a> #renamed_trait for #view_name<'a> {
             #(#generated_methods)*
         }
     };
@@ -457,17 +489,17 @@ fn generate_query_method(method: &DaoMethod) -> proc_macro2::TokenStream {
     match method.return_kind {
         ReturnKind::Option => quote! {
             async fn #ident(&self, #(#param_tokens),*) -> #full_return_type {
-                self.pool.query_one(#sql, #param_bindings).await
+                self.conn.query_one(#sql, #param_bindings).await
             }
         },
         ReturnKind::Vec => quote! {
             async fn #ident(&self, #(#param_tokens),*) -> #full_return_type {
-                self.pool.query_all(#sql, #param_bindings).await
+                self.conn.query_all(#sql, #param_bindings).await
             }
         },
         ReturnKind::Bare => quote! {
             async fn #ident(&self, #(#param_tokens),*) -> #full_return_type {
-                self.pool.query_one(#sql, #param_bindings).await
+                self.conn.query_one(#sql, #param_bindings).await
                     .and_then(|opt| opt.ok_or_else(|| dao::Error::custom("query returned no rows")))
             }
         },
@@ -484,7 +516,7 @@ fn generate_insert_method(method: &DaoMethod) -> proc_macro2::TokenStream {
 
     quote! {
         async fn #ident(&self, #(#param_tokens),*) -> #full_return_type {
-            self.pool.execute(
+            self.conn.execute(
                 <#entity_type as dao::EntityMeta>::insert_sql(),
                 dao::ToRow::to_insert_params(&#param_name)?,
             ).await
@@ -502,7 +534,7 @@ fn generate_update_method(method: &DaoMethod) -> proc_macro2::TokenStream {
 
     quote! {
         async fn #ident(&self, #(#param_tokens),*) -> #full_return_type {
-            self.pool.execute(
+            self.conn.execute(
                 <#entity_type as dao::EntityMeta>::update_sql(),
                 dao::ToRow::to_update_params(&#param_name)?,
             ).await
@@ -520,7 +552,7 @@ fn generate_delete_method(method: &DaoMethod) -> proc_macro2::TokenStream {
 
     quote! {
         async fn #ident(&self, #(#param_tokens),*) -> #full_return_type {
-            self.pool.execute(
+            self.conn.execute(
                 <#entity_type as dao::EntityMeta>::delete_sql(),
                 dao::ToRow::to_delete_params(&#param_name)?,
             ).await
@@ -547,7 +579,7 @@ fn generate_execute_method(method: &DaoMethod) -> proc_macro2::TokenStream {
                     <#entity_type as dao::EntityMeta>::FIELD_COUNT == #count_literal,
                     concat!("parameter count mismatch: SQL has ", stringify!(#count_literal), " placeholders but entity has a different field count")
                 );
-                self.pool.execute(#sql, dao::ToRow::to_insert_params(&#param_name)?).await
+                self.conn.execute(#sql, dao::ToRow::to_insert_params(&#param_name)?).await
             }
         }
     } else {
@@ -555,7 +587,7 @@ fn generate_execute_method(method: &DaoMethod) -> proc_macro2::TokenStream {
         let param_bindings = generate_param_bindings(method);
         quote! {
             async fn #ident(&self, #(#param_tokens),*) -> #full_return_type {
-                self.pool.execute(#sql, #param_bindings).await
+                self.conn.execute(#sql, #param_bindings).await
             }
         }
     }

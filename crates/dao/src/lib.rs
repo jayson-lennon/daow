@@ -1,3 +1,4 @@
+pub mod conn;
 pub mod entity_meta;
 pub mod error;
 pub mod from_row;
@@ -9,6 +10,7 @@ pub mod to_sql;
 
 pub use dao_macros::{dao, Entity};
 
+pub use conn::Conn;
 pub use entity_meta::{EntityMeta, ExecuteResult};
 pub use error::Error;
 pub use error::Result;

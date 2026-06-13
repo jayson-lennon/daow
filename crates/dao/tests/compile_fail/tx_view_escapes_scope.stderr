@@ -1,0 +1,11 @@
+error[E0597]: `tx` does not live long enough
+  --> tests/compile_fail/tx_view_escapes_scope.rs:27:18
+   |
+25 |     let leaked = {
+   |         ------ borrow later stored here
+26 |         let tx = pool.begin().await.unwrap();
+   |             -- binding `tx` declared here
+27 |         dao.with(&tx) // ERROR: `tx` does not live long enough
+   |                  ^^^ borrowed value does not live long enough
+28 |     };
+   |     - `tx` dropped here while still borrowed

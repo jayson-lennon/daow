@@ -1,0 +1,17 @@
+error[E0505]: cannot move out of `tx` because it is borrowed
+  --> tests/compile_fail/tx_commit_while_view_live.rs:30:5
+   |
+27 |     let tx = pool.begin().await.unwrap();
+   |         -- binding `tx` declared here
+28 |     let view = dao.with(&tx);
+   |                         --- borrow of `tx` occurs here
+29 |     view.get(1).await.unwrap();
+30 |     tx.commit().await.unwrap(); // ERROR E0505: cannot move out of borrowed `tx`
+   |     ^^ move out of `tx` occurs here
+31 |     view.get(2).await.unwrap(); // this later use keeps the borrow live across commit
+   |     ---- borrow later used here
+   |
+help: consider cloning the value if the performance cost is acceptable
+   |
+28 |     let view = dao.with(&tx.clone());
+   |                            ++++++++
