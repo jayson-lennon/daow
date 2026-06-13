@@ -34,7 +34,4 @@ fn main() {
          CREATE TABLE blog_articles (id INTEGER PRIMARY KEY, author_id INTEGER, title TEXT, body TEXT);"
     )
     .expect("Failed to create schema");
-
-    // Tell cargo to rerun if the build.rs changes
-    println!("cargo:rerun-if-changed=build.rs");
 }
