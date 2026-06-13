@@ -33,6 +33,7 @@ pub trait EntityMeta {
 }
 
 /// Result of a write operation (`INSERT`, `UPDATE`, `DELETE`).
+#[derive(Debug)]
 pub struct ExecuteResult {
     /// Number of rows affected by the statement.
     pub rows_affected: u64,

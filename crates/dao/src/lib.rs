@@ -14,7 +14,7 @@ pub use error::Error;
 pub use error::Result;
 pub use from_row::FromRow;
 pub use from_sql::FromSqlColumn;
-pub use pool::{Param, Pool, PoolBuilder};
+pub use pool::{Param, Pool, PoolBuilder, Transaction};
 pub use row::{ColumnValue, Row};
 pub use to_row::ToRow;
 pub use to_sql::ToSqlColumn;

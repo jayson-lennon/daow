@@ -189,6 +189,29 @@ impl Pool {
         })
     }
 
+    /// Hold one connection for the lifetime of `f`, which runs in a single
+    /// `spawn_blocking` task.
+    ///
+    /// This is the escape hatch for multi-statement blocks that must run on a *single*
+    /// connection with interleaved reads and writes: `f` gets a `&mut rusqlite::Connection`
+    /// and may call `conn.transaction(|tx| …)` directly, or run a sequence of statements.
+    ///
+    /// **Does not begin a transaction itself** — `f` owns its own transaction if it wants one.
+    /// This is deliberate: some operations (notably the migration runner) must toggle
+    /// `PRAGMA foreign_keys = OFF` on the bare connection, and pragmas are a **no-op inside
+    /// an active transaction**. Use [`Pool::begin`](Self::begin) instead for an async
+    /// transaction handle.
+    pub async fn with_conn<F, R>(&self, f: F) -> Result<R>
+    where
+        R: Send + 'static,
+        F: FnOnce(&mut rusqlite::Connection) -> Result<R> + Send + 'static,
+    {
+        let mut conn = self.acquire().await?;
+        tokio::task::spawn_blocking(move || f(&mut *conn))
+            .await
+            .map_err(|e| Error::custom(format!("spawn_blocking panicked: {e}")))?
+    }
+
     /// Executes a query that returns zero or one row.
     ///
     /// Returns `Ok(Some(T))` if a row was found, `Ok(None)` if no row matched.
@@ -263,6 +286,34 @@ impl Pool {
         .await
         .map_err(|e| Error::custom(format!("spawn_blocking panicked: {e}")))?
     }
+
+    /// Begin a transaction. Checks out one connection, issues `BEGIN`, and returns an
+    /// async [`Transaction`] that holds that connection across `.await` points.
+    ///
+    /// Statements run on the *same* connection via [`Transaction::query_one`] /
+    /// [`Transaction::query_all`] / [`Transaction::execute`]. Call [`Transaction::commit`]
+    /// to persist; dropping the transaction without committing rolls it back.
+    ///
+    /// Statements within a transaction must be `await`ed **sequentially** (never
+    /// `tokio::join!`'d) — they share one connection. This is correct for SQLite, which
+    /// has a single writer anyway.
+    pub async fn begin(&self) -> Result<Transaction> {
+        let conn = self.acquire().await?;
+        let conn = tokio::task::spawn_blocking(move || {
+            // execute_batch takes &self; no mut needed.
+            conn.execute_batch("BEGIN")?;
+            Ok::<PooledConn, Error>(conn)
+        })
+        .await
+        .map_err(|e| Error::custom(format!("spawn_blocking panicked: {e}")))??;
+
+        Ok(Transaction {
+            inner: Arc::new(Mutex::new(TransactionInner {
+                conn: Some(conn),
+                committed: false,
+            })),
+        })
+    }
 }
 
 /// RAII guard for a checked-out connection. Owns a permit and the connection; `Drop`
@@ -307,5 +358,166 @@ impl Drop for PooledConn {
         // Releasing the permit happens implicitly when the field drops, but dropping it
         // explicitly documents intent and matches the "return-on-Drop" invariant.
         drop(self.permit.take());
+    }
+}
+
+/// Interior of a [`Transaction`]: the held connection and whether it has been committed.
+struct TransactionInner {
+    conn: Option<PooledConn>,
+    committed: bool,
+}
+
+/// A database transaction holding a single checked-out connection across `.await` points.
+///
+/// Created by [`Pool::begin`]. The connection stays checked out (a pool permit is held)
+/// for the lifetime of this value. [`commit`](Transaction::commit) ends the transaction
+/// and returns the connection; dropping an uncommitted transaction rolls it back. In
+/// either case the connection returns to the pool.
+///
+/// A `Transaction` is cheap to clone (`Arc` bump) and clonable handles share one
+/// underlying connection — but statements must still be `await`ed sequentially.
+#[derive(Clone)]
+pub struct Transaction {
+    inner: Arc<Mutex<TransactionInner>>,
+}
+
+impl Transaction {
+    /// Run a statement on the held connection, returning its raw result. This is the
+    /// shared primitive: lock → take the conn out → `spawn_blocking` → put it back. The
+    /// mutex is held only for the brief `Option` swap, **not** across the await — so
+    /// sequential awaits are cheap and a panicked statement returns the conn cleanly.
+    async fn run_stmt<F, R>(&self, f: F) -> Result<R>
+    where
+        R: Send + 'static,
+        F: FnOnce(&mut rusqlite::Connection) -> Result<R> + Send + 'static,
+    {
+        let conn = {
+            let mut guard = self
+                .inner
+                .lock()
+                .map_err(|_| Error::custom("transaction lock poisoned"))?;
+            guard.conn.take().ok_or_else(|| Error::custom("transaction connection missing"))?
+        };
+        let (result, conn) = tokio::task::spawn_blocking(move || {
+            let mut conn = conn;
+            let result = f(&mut *conn);
+            (result, conn)
+        })
+        .await
+        .map_err(|e| Error::custom(format!("spawn_blocking panicked: {e}")))?;
+
+        // Put the conn back (best-effort).
+        if let Ok(mut guard) = self.inner.lock() {
+            guard.conn = Some(conn);
+        }
+        result
+    }
+
+    /// Executes a query that returns zero or one row, on the transaction's connection.
+    pub async fn query_one<T: FromRow + Send + 'static>(
+        &self,
+        sql: &str,
+        params: Vec<Param>,
+    ) -> Result<Option<T>> {
+        let sql = sql.to_owned();
+        self.run_stmt(move |conn| {
+            let mut stmt = conn.prepare(&sql)?;
+            let mut rows = stmt.query(rusqlite::params_from_iter(
+                params.iter().map(|p| p.as_ref()),
+            ))?;
+            match rows.next()? {
+                Some(row) => Ok(Some(T::from_row(&Row::new(row))?)),
+                None => Ok(None),
+            }
+        })
+        .await
+    }
+
+    /// Executes a query that returns zero or more rows, on the transaction's connection.
+    pub async fn query_all<T: FromRow + Send + 'static>(
+        &self,
+        sql: &str,
+        params: Vec<Param>,
+    ) -> Result<Vec<T>> {
+        let sql = sql.to_owned();
+        self.run_stmt(move |conn| {
+            let mut stmt = conn.prepare(&sql)?;
+            let mut rows = stmt.query(rusqlite::params_from_iter(
+                params.iter().map(|p| p.as_ref()),
+            ))?;
+            let mut results = Vec::new();
+            while let Some(row) = rows.next()? {
+                results.push(T::from_row(&Row::new(row))?);
+            }
+            Ok(results)
+        })
+        .await
+    }
+
+    /// Executes a write statement (INSERT, UPDATE, DELETE) on the transaction's connection.
+    pub async fn execute(&self, sql: &str, params: Vec<Param>) -> Result<ExecuteResult> {
+        let sql = sql.to_owned();
+        self.run_stmt(move |conn| {
+            let rows_affected = conn.execute(
+                &sql,
+                rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+            )?;
+            Ok(ExecuteResult {
+                rows_affected: rows_affected as u64,
+                last_insert_rowid: conn.last_insert_rowid(),
+            })
+        })
+        .await
+    }
+
+    /// Commit the transaction. Consumes `self` so it cannot run while a `.with(&self)` view
+    /// (see Phase 3) borrows the transaction — the borrow checker rejects that.
+    pub async fn commit(self) -> Result<()> {
+        // Take the conn out and flip the committed flag under a *brief* lock; do not hold
+        // the mutex across the spawn_blocking await.
+        let conn = {
+            let mut guard = self
+                .inner
+                .lock()
+                .map_err(|_| Error::custom("transaction lock poisoned"))?;
+            guard.committed = true;
+            guard
+                .conn
+                .take()
+                .ok_or_else(|| Error::custom("transaction connection missing"))?
+        };
+        // Run COMMIT on the blocking pool. conn drops here → returned to idle by PooledConn::Drop.
+        tokio::task::spawn_blocking(move || {
+            conn.execute_batch("COMMIT")?;
+            Ok::<(), Error>(())
+        })
+        .await
+        .map_err(|e| Error::custom(format!("spawn_blocking panicked: {e}")))??;
+        Ok(())
+    }
+}
+
+impl Drop for Transaction {
+    fn drop(&mut self) {
+        // Only roll back if not committed and we still hold the connection.
+        let conn = {
+            let Ok(mut guard) = self.inner.lock() else {
+                return;
+            };
+            if guard.committed {
+                return;
+            }
+            guard.conn.take()
+        };
+        if let Some(conn) = conn {
+            // Best-effort explicit ROLLBACK. We CANNOT rely on rusqlite's auto-rollback-on-
+            // Drop here: the underlying Connection is returned to the pool's idle stack by
+            // PooledConn::Drop (it is NOT closed), so auto-rollback never fires. A dangling
+            // open BEGIN would leak into the next checkout. Run ROLLBACK explicitly; if it
+            // fails (conn in a bad state) we still return the conn — closing it later or
+            // the next use will surface the problem.
+            let _ = conn.execute_batch("ROLLBACK");
+            // conn (PooledConn) drops here → returned to idle by PooledConn::Drop.
+        }
     }
 }
