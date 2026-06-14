@@ -56,6 +56,11 @@ trait WidgetDao {
     #[query("SELECT id, name FROM widgets WHERE id = ?")]
     async fn get_required(&self, id: i64) -> Result<Widget, Report<StoreError>>;
 
+    // Selects ONLY `id` but maps to Widget — from_row fails at runtime reading
+    // `name`. Forces a dao::Error through the Option<T> query tail.
+    #[query("SELECT id FROM widgets WHERE id = ?")]
+    async fn get_id_only(&self, id: i64) -> Result<Option<Widget>, Report<StoreError>>;
+
     #[insert]
     async fn insert(&self, widget: Widget) -> Result<ExecuteResult, Report<StoreError>>;
 
@@ -141,6 +146,26 @@ async fn report_unit_error_query_failure() {
     let dao = WidgetDao::new(pool);
     // Bare query for a non-existent row → query_one returns None → Error::custom at runtime.
     let err = dao.get_required(999).await.unwrap_err();
+    assert_chain_reaches_dao(&err);
+}
+
+#[tokio::test]
+async fn report_unit_error_option_query_failure() {
+    // The Option<T> query path (ReturnKind::Option) must also wrap dao::Error into
+    // Report<StoreError>. `get_id_only` selects only `id`; Widget::from_row then
+    // fails at runtime reading `name` (Error::ColumnNotFound). This exercises the
+    // Option<T> query tail through wrap_tail's Report(C) branch — the one combination
+    // not previously covered on a failure path.
+    let (pool, _dir) = setup_db().await;
+    let dao = WidgetDao::new(pool);
+    // Insert a row so the query returns Some(row) and from_row actually runs.
+    dao.insert(Widget {
+        id: 1,
+        name: "x".to_string(),
+    })
+    .await
+    .unwrap();
+    let err = dao.get_id_only(1).await.unwrap_err();
     assert_chain_reaches_dao(&err);
 }
 
