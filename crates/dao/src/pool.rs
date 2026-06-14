@@ -62,13 +62,19 @@ pub struct PoolBuilder {
 }
 
 impl PoolBuilder {
-    /// Start a new builder with defaults (`max_size = 4`, `acquire_timeout = 5s`, no pragmas).
+    /// Start a new builder with sane SQLite defaults: `max_size = 4`, `acquire_timeout = 5s`,
+    /// and pragmas `foreign_keys=ON`, `journal_mode=WAL`, `busy_timeout=5000`. All pragmas are
+    /// overridable via `.pragma()` (last-key-wins).
     pub fn new() -> Self {
         Self {
             path: None,
             max_size: DEFAULT_MAX_SIZE,
             acquire_timeout: DEFAULT_ACQUIRE_TIMEOUT,
-            pragmas: Vec::new(),
+            pragmas: vec![
+                ("foreign_keys".to_string(), "ON".to_string()),
+                ("journal_mode".to_string(), "WAL".to_string()),
+                ("busy_timeout".to_string(), "5000".to_string()),
+            ],
         }
     }
 
@@ -95,8 +101,17 @@ impl PoolBuilder {
     ///
     /// Values are interpolated as raw SQL (the values originate from the application, not
     /// user input), e.g. `.pragma("foreign_keys", "ON")` → `PRAGMA foreign_keys = ON`.
+    ///
+    /// Replaces an existing pragma with the same key (last-key-wins), so callers can override
+    /// the [`new()`](Self::new) defaults without producing duplicate entries.
     pub fn pragma(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.pragmas.push((key.into(), value.into()));
+        let key = key.into();
+        let value = value.into();
+        if let Some(slot) = self.pragmas.iter_mut().find(|(k, _)| k == &key) {
+            slot.1 = value;
+        } else {
+            self.pragmas.push((key, value));
+        }
         self
     }
 

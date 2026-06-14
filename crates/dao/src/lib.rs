@@ -642,8 +642,9 @@ mod tests {
     }
 
     /// Builder-applied pragmas must be observable on every checked-out connection.
-    /// This is the gap-#3 fix: `PRAGMA foreign_keys` is off-by-default per connection,
-    /// which silently breaks `ON DELETE CASCADE` unless the pool sets it.
+    /// Since the builder now defaults `foreign_keys=ON`, this test also covers the override
+    /// path (explicit `.pragma("foreign_keys", "ON")` replaces the default with the same value,
+    /// verifying the last-key-wins dedup keeps the count at 1, not 2).
     #[tokio::test]
     async fn pool_builder_pragma_applied() {
         let dir = tempfile::tempdir().unwrap();
@@ -664,6 +665,39 @@ mod tests {
                 "iteration {i}: foreign_keys pragma not applied to checked-out connection"
             );
         }
+    }
+
+    /// `Pool::open` (via the default builder) applies the three sane pragma defaults.
+    #[tokio::test]
+    async fn pool_open_applies_default_pragmas() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("defaults.db");
+        let pool = Pool::open(db_path.to_str().unwrap()).unwrap();
+        let fk: Option<i64> = pool.query_one("PRAGMA foreign_keys", vec![]).await.unwrap();
+        let journal: Option<String> =
+            pool.query_one("PRAGMA journal_mode", vec![]).await.unwrap();
+        let busy: Option<i64> = pool.query_one("PRAGMA busy_timeout", vec![]).await.unwrap();
+        assert_eq!(fk, Some(1), "foreign_keys default should be ON");
+        assert_eq!(
+            journal.as_deref(),
+            Some("wal"),
+            "journal_mode default should be WAL"
+        );
+        assert_eq!(busy, Some(5000), "busy_timeout default should be 5000ms");
+    }
+
+    /// An explicit `.pragma("foreign_keys", "OFF")` overrides the default ON (last-key-wins).
+    #[tokio::test]
+    async fn pragma_overrides_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("override.db");
+        let pool = Pool::builder()
+            .path(db_path.to_str().unwrap())
+            .pragma("foreign_keys", "OFF")
+            .build()
+            .unwrap();
+        let fk: Option<i64> = pool.query_one("PRAGMA foreign_keys", vec![]).await.unwrap();
+        assert_eq!(fk, Some(0), "explicit .pragma() should override the default");
     }
 
     /// `:memory:` opens a per-connection private DB in SQLite. The pool must force

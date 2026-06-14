@@ -32,7 +32,14 @@ fn main() {
          CREATE TABLE accounts (id INTEGER PRIMARY KEY, email TEXT, balance INTEGER);
          CREATE TABLE blog_authors (id INTEGER PRIMARY KEY, name TEXT);
          CREATE TABLE blog_articles (id INTEGER PRIMARY KEY, author_id INTEGER, title TEXT, body TEXT);
-         CREATE TABLE widgets (id INTEGER PRIMARY KEY, name TEXT);"
+         CREATE TABLE widgets (id INTEGER PRIMARY KEY, name TEXT);
+         -- Tables for #[upsert] tests (Phase 2).
+         -- `children` references widgets with ON DELETE CASCADE so upsert tests can
+         -- assert that non-destructive ON CONFLICT DO UPDATE does NOT cascade-delete children
+         -- (unlike INSERT OR REPLACE / REPLACE which would).
+         CREATE TABLE children (id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL REFERENCES widgets(id) ON DELETE CASCADE);
+         -- All-PK junction table to exercise the DO NOTHING upsert fallback.
+         CREATE TABLE junctions (a INTEGER NOT NULL, b INTEGER NOT NULL, PRIMARY KEY(a, b));"
     )
     .expect("Failed to create schema");
 }
