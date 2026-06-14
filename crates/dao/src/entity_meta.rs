@@ -21,6 +21,16 @@ pub trait EntityMeta {
     /// Format: `INSERT INTO table_name (col1, col2, ...) VALUES (?, ?, ...)`
     fn insert_sql() -> &'static str;
 
+    /// Returns the generated UPSERT SQL for this entity.
+    ///
+    /// Format: `INSERT INTO table_name (cols) VALUES (?, ...) ON CONFLICT(pk) DO UPDATE SET
+    /// non_pk = excluded.non_pk`.
+    ///
+    /// For all-PK entities (junction tables), emits `... ON CONFLICT(pk) DO NOTHING` since there
+    /// are no non-PK columns to SET. Requires SQLite >= 3.24 for the `excluded.<col>` form.
+    fn upsert_sql() -> &'static str;
+
+
     /// Returns the generated UPDATE SQL for this entity.
     ///
     /// Format: `UPDATE table_name SET non_pk1 = ?, non_pk2 = ?, ... WHERE pk1 = ?`

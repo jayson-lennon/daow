@@ -269,6 +269,37 @@ fn generate_write_impls(
     // DELETE: WHERE pk columns
     let delete_sql = format!("DELETE FROM {} WHERE {}", table_name, where_clause_sql);
 
+    // UPSERT: INSERT ... ON CONFLICT(pk) DO UPDATE SET non_pk = excluded.non_pk
+    // For all-PK entities (junction tables), there's nothing to SET, so emit DO NOTHING.
+    let conflict_target: String = pk_fields
+        .iter()
+        .map(|f| f.column_name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let upsert_sql = if non_pk_fields.is_empty() {
+        format!(
+            "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT({}) DO NOTHING",
+            table_name,
+            columns.join(", "),
+            placeholders.join(", "),
+            conflict_target
+        )
+    } else {
+        let set_excluded: String = non_pk_fields
+            .iter()
+            .map(|f| format!("{} = excluded.{}", f.column_name, f.column_name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT({}) DO UPDATE SET {}",
+            table_name,
+            columns.join(", "),
+            placeholders.join(", "),
+            conflict_target,
+            set_excluded
+        )
+    };
+
     // PK indices
     let pk_indices: Vec<usize> = pk_fields.iter().map(|f| f.field_index).collect();
 
@@ -280,6 +311,10 @@ fn generate_write_impls(
 
             fn insert_sql() -> &'static str {
                 #insert_sql
+            }
+
+            fn upsert_sql() -> &'static str {
+                #upsert_sql
             }
 
             fn update_sql() -> &'static str {

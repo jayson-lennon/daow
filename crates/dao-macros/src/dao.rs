@@ -11,6 +11,7 @@ enum MethodKind {
     Query,
     Insert,
     Update,
+    Upsert,
     Delete,
     Execute,
     /// Hand-written body, no annotation. Forwarded verbatim.
@@ -200,6 +201,7 @@ fn strip_dao_attrs(trait_def: &ItemTrait, new_name: &syn::Ident) -> proc_macro2:
                 !attr.path().is_ident("query")
                     && !attr.path().is_ident("insert")
                     && !attr.path().is_ident("update")
+                    && !attr.path().is_ident("upsert")
                     && !attr.path().is_ident("delete")
                     && !attr.path().is_ident("execute")
             });
@@ -322,6 +324,17 @@ fn extract_method_kind(method: &TraitItemFn) -> syn::Result<Option<ExtractedMeth
             }
             found = Some(ExtractedMethod {
                 method_kind: MethodKind::Update,
+                sql: None,
+            });
+        } else if attr.path().is_ident("upsert") {
+            if found.is_some() {
+                return Err(syn::Error::new_spanned(
+                    attr,
+                    "method has multiple DAO annotations",
+                ));
+            }
+            found = Some(ExtractedMethod {
+                method_kind: MethodKind::Upsert,
                 sql: None,
             });
         } else if attr.path().is_ident("delete") {
@@ -670,6 +683,7 @@ fn generate_method(method: &DaoMethod) -> proc_macro2::TokenStream {
     match method.method_kind {
         MethodKind::Query => generate_query_method(method),
         MethodKind::Insert => generate_insert_method(method),
+        MethodKind::Upsert => generate_upsert_method(method),
         MethodKind::Update => generate_update_method(method),
         MethodKind::Delete => generate_delete_method(method),
         MethodKind::Execute => generate_execute_method(method),
@@ -727,6 +741,38 @@ fn generate_insert_method(method: &DaoMethod) -> proc_macro2::TokenStream {
     let tail = quote! {
         self.conn.execute(
             <#entity_type as dao::EntityMeta>::insert_sql(),
+            #params_expr?,
+        ).await
+    };
+    let wrapped_tail = wrap_tail(&method.error_slot, tail);
+
+    quote! {
+        async fn #ident(&self, #(#param_tokens),*) -> #full_return_type {
+            #import
+            #wrapped_tail
+        }
+    }
+}
+
+/// Generate an upsert method using EntityMeta::upsert_sql() and to_insert_params().
+///
+/// Upsert reuses insert param ordering (all fields in declaration order) but emits
+/// INSERT ... ON CONFLICT(pk) DO UPDATE SET non_pk = excluded.non_pk.
+fn generate_upsert_method(method: &DaoMethod) -> proc_macro2::TokenStream {
+    let ident = &method.ident;
+    let full_return_type = &method.full_return_type;
+    let entity_type = get_entity_type(method);
+    let param_tokens = generate_param_tokens(method);
+    let param_name = get_param_name(method, 0);
+    let import = error_import(&method.error_slot);
+
+    let params_expr = wrap_fallible(
+        &method.error_slot,
+        quote! { dao::ToRow::to_insert_params(&#param_name) },
+    );
+    let tail = quote! {
+        self.conn.execute(
+            <#entity_type as dao::EntityMeta>::upsert_sql(),
             #params_expr?,
         ).await
     };
