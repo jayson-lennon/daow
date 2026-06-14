@@ -1,17 +1,32 @@
-//! Basic DAO example: demonstrates Entity derive, DAO trait with read and write methods.
+//! Same as `basic.rs`, but DAO methods return `error_stack::Report<E>`
+//! instead of the `dao::Result` alias.
 //!
-//! Shows how to use a strongly-typed ID newtype instead of raw i64 for
-//! database primary keys.
+//! Define a unit error type, use it in each method's return type, and
+//! propagate errors with `?` exactly as before — `change_context` is
+//! emitted for you.
 //!
-//! Run with: cargo run --example basic
+//! Run with: cargo run --example basic_error_stack
 
 use dao::{
-    async_trait, dao, row::ColumnValue, Entity, ExecuteResult, FromSqlColumn, Pool, Result,
-    ToSqlColumn,
+    async_trait, dao, row::ColumnValue, Entity, ExecuteResult, FromSqlColumn, Pool, ToSqlColumn,
 };
+use error_stack::{Report, ResultExt};
+
+/// A consumer-defined unit error. `?` on any DAO method below lifts the
+/// underlying `dao::Error` into this type via `change_context`.
+#[derive(Debug)]
+struct UserError;
+
+impl std::fmt::Display for UserError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("user operation failed")
+    }
+}
+
+impl std::error::Error for UserError {}
 
 /// Set up an in-memory database with schema.
-async fn setup_db() -> Result<Pool> {
+async fn setup_db() -> Result<Pool, dao::Error> {
     let pool = Pool::open(":memory:")?;
 
     pool.execute(
@@ -28,13 +43,13 @@ async fn setup_db() -> Result<Pool> {
 struct UserId(i64);
 
 impl FromSqlColumn for UserId {
-    fn from_column(value: &ColumnValue) -> Result<Self> {
+    fn from_column(value: &ColumnValue) -> Result<Self, dao::Error> {
         Ok(UserId(i64::from_column(value)?))
     }
 }
 
 impl ToSqlColumn for UserId {
-    fn to_column(&self) -> Result<dao::Param> {
+    fn to_column(&self) -> Result<dao::Param, dao::Error> {
         self.0.to_column()
     }
 }
@@ -52,30 +67,32 @@ struct User {
 #[async_trait]
 trait UserDao {
     #[query("SELECT id, name, email FROM users WHERE id = ?")]
-    async fn get_by_id(&self, id: UserId) -> Result<Option<User>>;
+    async fn get_by_id(&self, id: UserId) -> Result<Option<User>, Report<UserError>>;
 
     #[query("SELECT id, name, email FROM users ORDER BY id")]
-    async fn get_all(&self) -> Result<Vec<User>>;
+    async fn get_all(&self) -> Result<Vec<User>, Report<UserError>>;
 
     #[query("SELECT COUNT(*) FROM users")]
-    async fn count(&self) -> Result<i64>;
+    async fn count(&self) -> Result<i64, Report<UserError>>;
 
     #[insert]
-    async fn insert(&self, user: User) -> Result<ExecuteResult>;
+    async fn insert(&self, user: User) -> Result<ExecuteResult, Report<UserError>>;
 
     #[upsert]
-    async fn upsert(&self, user: User) -> Result<ExecuteResult>;
+    async fn upsert(&self, user: User) -> Result<ExecuteResult, Report<UserError>>;
 
     #[update]
-    async fn update(&self, user: User) -> Result<ExecuteResult>;
+    async fn update(&self, user: User) -> Result<ExecuteResult, Report<UserError>>;
 
     #[delete]
-    async fn delete(&self, user: User) -> Result<ExecuteResult>;
+    async fn delete(&self, user: User) -> Result<ExecuteResult, Report<UserError>>;
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    let pool = setup_db().await?;
+async fn main() -> Result<(), Report<UserError>> {
+    // `setup_db` returns `dao::Result`, so bridge it into our domain error
+    // with `change_context`.
+    let pool = setup_db().await.change_context(UserError)?;
     let user_dao = UserDao::new(pool);
 
     // Insert users via the DAO.
@@ -103,7 +120,6 @@ async fn main() -> Result<()> {
             email: "carol@example.com".to_string(),
         })
         .await?;
-
 
     // Get by ID — note the strongly-typed UserId.
     let user = user_dao.get_by_id(UserId(1)).await?;
