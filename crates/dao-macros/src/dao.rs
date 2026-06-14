@@ -36,6 +36,9 @@ struct DaoMethod {
     /// Verbatim body for a pass-through method (no annotation, hand-written).
     /// `None` for annotated methods (whose body the macro generates).
     body: Option<syn::Block>,
+    /// How the method's error slot is declared (plain `dao::Result`, `Report<C>`, or
+    /// `Report<dao::Error>`). Drives error_stack conversion code emission.
+    error_slot: ErrorSlot,
 }
 
 #[derive(Debug, PartialEq)]
@@ -43,6 +46,21 @@ enum ReturnKind {
     Option,
     Vec,
     Bare,
+}
+
+/// How the method's error slot is declared.
+///
+/// Controls whether the generated body emits `error_stack` conversion code.
+#[derive(Debug, PartialEq, Clone)]
+enum ErrorSlot {
+    /// `Result<T>` or `Result<T, dao::Error>` — today's behavior, no error_stack code.
+    Plain,
+    /// `Result<T, Report<C>>` where `C` is a (unit) error type the consumer provides.
+    /// The generated body emits `.change_context(C)`.
+    Report(Type),
+    /// `Result<T, Report<dao::Error>>` — special case: `dao::Error` is an enum, not a
+    /// constructable unit value, so the body emits `.map_err(::error_stack::Report::new)`.
+    ReportDaoError,
 }
 
 /// Implements the `#[dao]` attribute macro.
@@ -221,6 +239,7 @@ fn extract_methods(trait_def: &ItemTrait) -> syn::Result<Vec<DaoMethod>> {
                     ));
                 }
                 let (params, return_kind, full_return_type) = analyze_signature(method)?;
+                let error_slot = analyze_error_slot(&full_return_type);
                 methods.push(DaoMethod {
                     ident: method.sig.ident.clone(),
                     method_kind: extracted.method_kind,
@@ -230,10 +249,12 @@ fn extract_methods(trait_def: &ItemTrait) -> syn::Result<Vec<DaoMethod>> {
                     full_return_type,
                     sql_param_count: None,
                     body: None,
+                    error_slot,
                 });
             } else if has_body {
                 // Pass-through: hand-written body, no annotation.
                 let (params, return_kind, full_return_type) = analyze_signature(method)?;
+                let error_slot = analyze_error_slot(&full_return_type);
                 methods.push(DaoMethod {
                     ident: method.sig.ident.clone(),
                     method_kind: MethodKind::PassThrough,
@@ -243,6 +264,7 @@ fn extract_methods(trait_def: &ItemTrait) -> syn::Result<Vec<DaoMethod>> {
                     full_return_type,
                     sql_param_count: None,
                     body: method.default.clone(),
+                    error_slot,
                 });
             }
         }
@@ -443,6 +465,112 @@ fn extract_generic_arg(args: &PathArguments) -> syn::Result<Type> {
         "expected generic type argument (e.g., Option<T>)",
     ))
 }
+
+/// Analyze the error slot of a return type like `Result<T, E>`.
+///
+/// Returns:
+/// - `Plain` for `Result<T>`, `Result<T, dao::Error>`, or non-`Result` returns.
+/// - `Report(C)` for `Result<T, Report<C>>` where `C` is not `dao::Error`.
+/// - `ReportDaoError` for `Result<T, Report<dao::Error>>` (special case: `dao::Error`
+///   is an enum and cannot be written as a unit value for `change_context`).
+fn analyze_error_slot(full_return_type: &Type) -> ErrorSlot {
+    let last_segment = match full_return_type {
+        Type::Path(type_path) => match type_path.path.segments.last() {
+            Some(seg) if seg.ident == "Result" => seg,
+            _ => return ErrorSlot::Plain,
+        },
+        _ => return ErrorSlot::Plain,
+    };
+
+    let args = match &last_segment.arguments {
+        PathArguments::AngleBracketed(args) => &args.args,
+        _ => return ErrorSlot::Plain,
+    };
+
+    // Result<T> (single arg) defaults the error to dao::Error — plain.
+    let error_ty = match args.get(1) {
+        Some(GenericArgument::Type(ty)) => ty,
+        _ => return ErrorSlot::Plain,
+    };
+
+    // Is the error type `Report<C>`?
+    let Type::Path(report_path) = error_ty else {
+        return ErrorSlot::Plain;
+    };
+    let report_segment = match report_path.path.segments.last() {
+        Some(seg) if seg.ident == "Report" => seg,
+        _ => return ErrorSlot::Plain,
+    };
+
+    let inner_ty = match &report_segment.arguments {
+        PathArguments::AngleBracketed(args) => match args.args.first() {
+            Some(GenericArgument::Type(ty)) => ty,
+            _ => return ErrorSlot::Plain,
+        },
+        _ => return ErrorSlot::Plain,
+    };
+
+    if path_is_dao_error(inner_ty) {
+        ErrorSlot::ReportDaoError
+    } else {
+        ErrorSlot::Report(inner_ty.clone())
+    }
+}
+
+/// True if `ty`'s path resolves to `dao::Error`.
+fn path_is_dao_error(ty: &Type) -> bool {
+    let Type::Path(type_path) = ty else { return false; };
+    let segments: Vec<_> = type_path
+        .path
+        .segments
+        .iter()
+        .map(|s| s.ident.to_string())
+        .collect();
+    // Accept `dao::Error`, `crate::dao::Error`, etc. — match the last two segments.
+    segments.len() >= 2 && segments[segments.len() - 2] == "dao" && segments[segments.len() - 1] == "Error"
+}
+
+/// Emit a `use ::error_stack::ResultExt as _;` statement iff the slot requires it.
+/// Only `Report(C)` needs it (for `ResultExt::change_context`). `ReportDaoError` uses the
+/// fully-qualified `::error_stack::Report::new`; `Plain` uses nothing.
+fn error_import(slot: &ErrorSlot) -> Option<proc_macro2::TokenStream> {
+    match slot {
+        ErrorSlot::Report(_) => Some(quote! { use ::error_stack::ResultExt as _; }),
+        _ => None,
+    }
+}
+
+/// Wrap a fallible expression whose result will be immediately consumed by `?`.
+///
+/// For `Report(C)`: emit `expr.change_context(C)` — `ResultExt` lifts the `dao::Error` into a
+/// `Report<dao::Error>` internally, then attaches `C` as the new top context. The trailing `?`
+/// then works via the reflexive `From<Report<C>> for Report<C>`.
+fn wrap_fallible(slot: &ErrorSlot, expr: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+    match slot {
+        ErrorSlot::Report(context_ty) => {
+            quote! { (#expr).change_context(#context_ty) }
+        }
+        _ => expr,
+    }
+}
+
+/// Wrap the tail (final) expression of a method body. Unlike `wrap_fallible`, this has no
+/// trailing `?`; it must produce the method's final return value.
+///
+/// For `Report(C)`: emit `expr.change_context(C)`.
+/// For `ReportDaoError`: emit `expr.map_err(::error_stack::Report::new)` — `dao::Error` is an
+/// enum, not a unit value, so `change_context(dao::Error)` is impossible.
+fn wrap_tail(slot: &ErrorSlot, expr: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+    match slot {
+        ErrorSlot::Report(context_ty) => {
+            quote! { (#expr).change_context(#context_ty) }
+        }
+        ErrorSlot::ReportDaoError => {
+            quote! { (#expr).map_err(::error_stack::Report::new) }
+        }
+        ErrorSlot::Plain => expr,
+    }
+}
 /// Count the effective number of SQL parameters from method params.
 /// Simple ident params (e.g., `id: i64`) count as 1.
 /// Destructured struct params (e.g., `User { name, id, .. }: User`) count as the number of named fields.
@@ -549,7 +677,9 @@ fn generate_method(method: &DaoMethod) -> proc_macro2::TokenStream {
     }
 }
 
-/// Generate a query method (existing behavior).
+/// Generate a query method.
+///
+/// The tail expression is wrapped via `wrap_tail` to apply error_slot conversion.
 fn generate_query_method(method: &DaoMethod) -> proc_macro2::TokenStream {
     let ident = &method.ident;
     let sql = method.sql.as_ref().unwrap();
@@ -557,24 +687,27 @@ fn generate_query_method(method: &DaoMethod) -> proc_macro2::TokenStream {
 
     let param_tokens = generate_param_tokens(method);
     let param_bindings = generate_param_bindings(method);
+    let import = error_import(&method.error_slot);
 
-    match method.return_kind {
+    let tail = match method.return_kind {
         ReturnKind::Option => quote! {
-            async fn #ident(&self, #(#param_tokens),*) -> #full_return_type {
-                self.conn.query_one(#sql, #param_bindings).await
-            }
+            self.conn.query_one(#sql, #param_bindings).await
         },
         ReturnKind::Vec => quote! {
-            async fn #ident(&self, #(#param_tokens),*) -> #full_return_type {
-                self.conn.query_all(#sql, #param_bindings).await
-            }
+            self.conn.query_all(#sql, #param_bindings).await
         },
         ReturnKind::Bare => quote! {
-            async fn #ident(&self, #(#param_tokens),*) -> #full_return_type {
-                self.conn.query_one(#sql, #param_bindings).await
-                    .and_then(|opt| opt.ok_or_else(|| dao::Error::custom("query returned no rows")))
-            }
+            self.conn.query_one(#sql, #param_bindings).await
+                .and_then(|opt| opt.ok_or_else(|| dao::Error::custom("query returned no rows")))
         },
+    };
+    let wrapped_tail = wrap_tail(&method.error_slot, tail);
+
+    quote! {
+        async fn #ident(&self, #(#param_tokens),*) -> #full_return_type {
+            #import
+            #wrapped_tail
+        }
     }
 }
 
@@ -585,13 +718,24 @@ fn generate_insert_method(method: &DaoMethod) -> proc_macro2::TokenStream {
     let entity_type = get_entity_type(method);
     let param_tokens = generate_param_tokens(method);
     let param_name = get_param_name(method, 0);
+    let import = error_import(&method.error_slot);
+
+    let params_expr = wrap_fallible(
+        &method.error_slot,
+        quote! { dao::ToRow::to_insert_params(&#param_name) },
+    );
+    let tail = quote! {
+        self.conn.execute(
+            <#entity_type as dao::EntityMeta>::insert_sql(),
+            #params_expr?,
+        ).await
+    };
+    let wrapped_tail = wrap_tail(&method.error_slot, tail);
 
     quote! {
         async fn #ident(&self, #(#param_tokens),*) -> #full_return_type {
-            self.conn.execute(
-                <#entity_type as dao::EntityMeta>::insert_sql(),
-                dao::ToRow::to_insert_params(&#param_name)?,
-            ).await
+            #import
+            #wrapped_tail
         }
     }
 }
@@ -603,13 +747,24 @@ fn generate_update_method(method: &DaoMethod) -> proc_macro2::TokenStream {
     let entity_type = get_entity_type(method);
     let param_tokens = generate_param_tokens(method);
     let param_name = get_param_name(method, 0);
+    let import = error_import(&method.error_slot);
+
+    let params_expr = wrap_fallible(
+        &method.error_slot,
+        quote! { dao::ToRow::to_update_params(&#param_name) },
+    );
+    let tail = quote! {
+        self.conn.execute(
+            <#entity_type as dao::EntityMeta>::update_sql(),
+            #params_expr?,
+        ).await
+    };
+    let wrapped_tail = wrap_tail(&method.error_slot, tail);
 
     quote! {
         async fn #ident(&self, #(#param_tokens),*) -> #full_return_type {
-            self.conn.execute(
-                <#entity_type as dao::EntityMeta>::update_sql(),
-                dao::ToRow::to_update_params(&#param_name)?,
-            ).await
+            #import
+            #wrapped_tail
         }
     }
 }
@@ -621,13 +776,24 @@ fn generate_delete_method(method: &DaoMethod) -> proc_macro2::TokenStream {
     let entity_type = get_entity_type(method);
     let param_tokens = generate_param_tokens(method);
     let param_name = get_param_name(method, 0);
+    let import = error_import(&method.error_slot);
+
+    let params_expr = wrap_fallible(
+        &method.error_slot,
+        quote! { dao::ToRow::to_delete_params(&#param_name) },
+    );
+    let tail = quote! {
+        self.conn.execute(
+            <#entity_type as dao::EntityMeta>::delete_sql(),
+            #params_expr?,
+        ).await
+    };
+    let wrapped_tail = wrap_tail(&method.error_slot, tail);
 
     quote! {
         async fn #ident(&self, #(#param_tokens),*) -> #full_return_type {
-            self.conn.execute(
-                <#entity_type as dao::EntityMeta>::delete_sql(),
-                dao::ToRow::to_delete_params(&#param_name)?,
-            ).await
+            #import
+            #wrapped_tail
         }
     }
 }
@@ -637,30 +803,49 @@ fn generate_execute_method(method: &DaoMethod) -> proc_macro2::TokenStream {
     let ident = &method.ident;
     let sql = method.sql.as_ref().unwrap();
     let full_return_type = &method.full_return_type;
+    let import = error_import(&method.error_slot);
 
     let param_tokens = generate_param_tokens(method);
 
-    if let Some(sql_param_count) = method.sql_param_count {
+    let body = if let Some(sql_param_count) = method.sql_param_count {
         // Entity expansion: single param implementing ToRow, validated via FIELD_COUNT const assertion
         let entity_type = &method.params[0].ty;
         let param_name = get_param_name(method, 0);
         let count_literal = sql_param_count;
+        // The const FIELD_COUNT assertion must stay a bare statement; only the
+        // execute call below it is wrapped for error conversion. Wrapping a statement
+        // sequence in `(...)` (which wrap_tail does) would be a syntax error.
+        let params_expr = wrap_fallible(
+            &method.error_slot,
+            quote! { dao::ToRow::to_insert_params(&#param_name) },
+        );
+        let assert_stmt = quote! {
+            const _: () = assert!(
+                <#entity_type as dao::EntityMeta>::FIELD_COUNT == #count_literal,
+                concat!("parameter count mismatch: SQL has ", stringify!(#count_literal), " placeholders but entity has a different field count")
+            );
+        };
+        let exec_tail = quote! {
+            self.conn.execute(#sql, #params_expr?).await
+        };
+        let exec_wrapped = wrap_tail(&method.error_slot, exec_tail);
         quote! {
-            async fn #ident(&self, #(#param_tokens),*) -> #full_return_type {
-                const _: () = assert!(
-                    <#entity_type as dao::EntityMeta>::FIELD_COUNT == #count_literal,
-                    concat!("parameter count mismatch: SQL has ", stringify!(#count_literal), " placeholders but entity has a different field count")
-                );
-                self.conn.execute(#sql, dao::ToRow::to_insert_params(&#param_name)?).await
-            }
+            #assert_stmt
+            #exec_wrapped
         }
     } else {
         // Scalar params: 1:1 binding
         let param_bindings = generate_param_bindings(method);
-        quote! {
-            async fn #ident(&self, #(#param_tokens),*) -> #full_return_type {
-                self.conn.execute(#sql, #param_bindings).await
-            }
+        let tail = quote! {
+            self.conn.execute(#sql, #param_bindings).await
+        };
+        wrap_tail(&method.error_slot, tail)
+    };
+
+    quote! {
+        async fn #ident(&self, #(#param_tokens),*) -> #full_return_type {
+            #import
+            #body
         }
     }
 }
@@ -711,14 +896,21 @@ fn generate_param_tokens(method: &DaoMethod) -> Vec<proc_macro2::TokenStream> {
 
 /// Generate parameter binding expressions for SQL execution.
 /// Supports simple ident params and destructured struct params.
+///
+/// Each `to_column()` call is wrapped via `wrap_fallible` so that its `dao::Error` is converted
+/// to the method's declared error type before the trailing `?` propagates it.
 fn generate_param_bindings(method: &DaoMethod) -> proc_macro2::TokenStream {
+    let to_col = |binding: &syn::Ident| {
+        let call = quote! { dao::ToSqlColumn::to_column(&#binding) };
+        let wrapped = wrap_fallible(&method.error_slot, call);
+        quote! { #wrapped? }
+    };
     let bindings: Vec<_> = method
         .params
         .iter()
         .flat_map(|p| match &*p.pat {
             syn::Pat::Ident(pat_ident) => {
-                let ident = &pat_ident.ident;
-                vec![quote! { dao::ToSqlColumn::to_column(&#ident)? }]
+                vec![to_col(&pat_ident.ident)]
             }
             syn::Pat::Struct(pat_struct) => pat_struct
                 .fields
@@ -728,7 +920,7 @@ fn generate_param_bindings(method: &DaoMethod) -> proc_macro2::TokenStream {
                         syn::Pat::Ident(ident) => &ident.ident,
                         _ => panic!("expected identifiable field binding in struct pattern"),
                     };
-                    quote! { dao::ToSqlColumn::to_column(&#binding)? }
+                    to_col(binding)
                 })
                 .collect(),
             _ => panic!("expected identifiable or struct destructured parameter"),
