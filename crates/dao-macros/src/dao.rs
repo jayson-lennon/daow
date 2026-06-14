@@ -53,6 +53,7 @@ enum ReturnKind {
 ///
 /// Controls whether the generated body emits `error_stack` conversion code.
 #[derive(Debug, PartialEq, Clone)]
+#[allow(clippy::large_enum_variant)] // analyzed at compile-time only; never stored at runtime
 enum ErrorSlot {
     /// `Result<T>` or `Result<T, dao::Error>` — today's behavior, no error_stack code.
     Plain,
