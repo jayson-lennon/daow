@@ -116,7 +116,7 @@ pub fn dao_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
         impl #struct_name {
             /// Construct from anything that converts into a [`dao::Conn`] — typically a
             /// [`dao::Pool`] (autocommit) but a [`dao::Transaction`] is also accepted.
-            pub fn new(conn: impl ::std::convert::Into<dao::Conn>) -> Self {
+            pub fn new<C: ::std::convert::Into<dao::Conn>>(conn: C) -> Self {
                 Self { conn: conn.into() }
             }
 
