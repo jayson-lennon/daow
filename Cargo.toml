@@ -11,7 +11,7 @@ rusqlite = { version = "0.40.1", features = ["bundled"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
 async-trait = "0.1"
 tracing = "0.1"
-syn = { version = "2", features = ["full"] }
+syn = { version = "2", features = ["full", "extra-traits"] }
 quote = "1"
 proc-macro2 = "1"
 tempfile = "3"
