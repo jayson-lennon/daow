@@ -1,10 +1,10 @@
 [workspace]
-members = ["crates/dao", "crates/dao-macros"]
+members = ["crates/daow", "crates/daow-macros"]
 resolver = "2"
 
 [workspace.dependencies]
 # Internal
-dao-macros = { version = "0.1.0", path = "crates/dao-macros" }
+daow-macros = { version = "0.1.0", path = "crates/daow-macros" }
 
 # External — versions frozen at current requirements except rusqlite (upgraded)
 rusqlite = { version = "0.40.1", features = ["bundled"] }

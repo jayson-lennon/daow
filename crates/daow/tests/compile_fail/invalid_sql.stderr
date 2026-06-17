@@ -1,0 +1,15 @@
+error: invalid SQL in #[query] on method 'get_all': no such table: nonexistent_table
+  --> tests/compile_fail/invalid_sql.rs:24:1
+   |
+24 | #[dao]
+   | ^^^^^^
+   |
+   = note: this error originates in the attribute macro `dao` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unused imports: `Pool`, `Result`, and `async_trait`
+  --> tests/compile_fail/invalid_sql.rs:17:12
+   |
+17 | use daow::{async_trait, dao, Entity, Pool, Result};
+   |            ^^^^^^^^^^^               ^^^^  ^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

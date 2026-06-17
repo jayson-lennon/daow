@@ -1,6 +1,6 @@
-# dao
+# daow
 
-A small, async SQLite data-access layer for Rust. `dao` gives you typed query
+A small, async SQLite data-access layer for Rust. `daow` gives you typed query
 traits whose SQL is **validated against a real database at compile time** — a
 typo'd column name fails your build, not your test suite (or worse, production).
 
@@ -8,10 +8,10 @@ typo'd column name fails your build, not your test suite (or worse, production).
 #[dao]
 trait SessionDao {
     #[query("SELECT id, title FROM sessions WHERE id = ?")]
-    async fn by_id(&self, id: String) -> dao::Result<Option<SessionRow>>;
+    async fn by_id(&self, id: String) -> daow::Result<Option<SessionRow>>;
 
     #[execute("UPDATE sessions SET archived = ? WHERE id = ?")]
-    async fn set_archived(&self, archived: bool, id: String) -> dao::Result<dao::ExecuteResult>;
+    async fn set_archived(&self, archived: bool, id: String) -> daow::Result<daow::ExecuteResult>;
 }
 ```
 
@@ -26,17 +26,17 @@ This file documents how to wire that compile-time validation into a project.
 ## (a) On first run, you'll get a hard error
 
 If you write a `#[dao]` trait with a `#[query]` or `#[execute]` method and
-build without telling `dao` where the validation database is, the build fails:
+build without telling `daow` where the validation database is, the build fails:
 
 ```
-error: DAO_DATABASE_URL environment variable not set.
+error: DAOW_DATABASE_URL environment variable not set.
        Set it to a SQLite database path for compile-time SQL validation.
 ```
 
-**This is the guarantee, not a bug.** `dao` validates your SQL by `prepare`-ing
-it against a real SQLite database (the one at `DAO_DATABASE_URL`). That database
+**This is the guarantee, not a bug.** `daow` validates your SQL by `prepare`-ing
+it against a real SQLite database (the one at `DAOW_DATABASE_URL`). That database
 must exist and must reflect the schema your code expects — otherwise the macro
-is validating against a fiction. So `DAO_DATABASE_URL` is mandatory whenever
+is validating against a fiction. So `DAOW_DATABASE_URL` is mandatory whenever
 your crate uses `#[query]` / `#[execute]`.
 
 The catch: *your migrator* is what defines that schema, and your library code
@@ -144,7 +144,7 @@ fn main() {
     // Single source of truth: the schema crate's own migrator defines the DB shape.
     my_app_schema::run_migrations(&mut conn).expect("apply schema migrations");
 
-    println!("cargo:rustc-env=DAO_DATABASE_URL={}", db_path.to_string_lossy());
+    println!("cargo:rustc-env=DAOW_DATABASE_URL={}", db_path.to_string_lossy());
     println!("cargo:rerun-if-changed=../my-app-schema/src/lib.rs");
 }
 ```
@@ -158,7 +158,7 @@ my-app-schema = { path = "../my-app-schema" }
 ```
 
 That's it. Every build recreates the validation database from your migrations,
-sets `DAO_DATABASE_URL`, and the macro validates against it. Works in IDEs, CI,
+sets `DAOW_DATABASE_URL`, and the macro validates against it. Works in IDEs, CI,
 and fresh clones — no environment variables to remember.
 
 > **If the validation DB acts stale** after you edit a migration (cargo's
@@ -169,9 +169,9 @@ and fresh clones — no environment variables to remember.
 
 ## Escape hatches
 
-`dao`'s typed `#[dao]` traits cover static SQL. When you need something they
+`daow`'s typed `#[dao]` traits cover static SQL. When you need something they
 can't express, two escape hatches are available — both are exercised in
-[`tests/jinn_patterns.rs`](crates/dao/tests/jinn_patterns.rs):
+[`tests/jinn_patterns.rs`](crates/daow/tests/jinn_patterns.rs):
 
 - **`pool.with_conn(|conn| { ... })`** — get a raw `&mut rusqlite::Connection`
   for a closure. Used for migrations (toggle `PRAGMA foreign_keys` off, run DDL,

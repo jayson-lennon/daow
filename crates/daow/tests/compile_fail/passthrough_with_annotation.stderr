@@ -1,0 +1,18 @@
+error: DAO method has both an annotation and a body.
+       Annotations auto-generate the body — remove the annotation to use a pass-through body, or remove the body to let the annotation generate it.
+  --> tests/compile_fail/passthrough_with_annotation.rs:29:5
+   |
+29 | /     #[query("SELECT id FROM widgets WHERE id = ?")]
+30 | |     async fn get(&self, id: i64) -> Result<Option<Widget>> {
+...  |
+34 | |             .await
+35 | |     }
+   | |_____^
+
+warning: unused imports: `Pool`, `Result`, and `async_trait`
+  --> tests/compile_fail/passthrough_with_annotation.rs:19:12
+   |
+19 | use daow::{async_trait, dao, Entity, Pool, Result};
+   |            ^^^^^^^^^^^               ^^^^  ^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

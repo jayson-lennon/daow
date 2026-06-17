@@ -15,3 +15,6 @@ pkg/
 .kilo/
 .opencode/
 **/*.db
+
+# Library crate: lockfile is not published
+Cargo.lock
