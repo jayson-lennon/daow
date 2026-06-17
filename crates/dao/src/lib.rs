@@ -13,6 +13,65 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with this program; if not, see <https://opensource.org/license/lgpl-3-0>.
 
+//! # dao
+//!
+//! A small, async SQLite data-access layer for Rust with **compile-time SQL
+//! validation**. Every `#[query]`/`#[insert]`/`#[update]`/`#[delete]`/`#[upsert]`
+//! method is checked against a real database schema at build time — so a typo'd
+//! column or a non-existent table fails to *compile*, never reaches runtime.
+//!
+//! ## The compile-time guarantee
+//!
+//! `dao` validates SQL by compiling your DAO traits against an actual SQLite
+//! database. You point the build at one with the `DAO_DATABASE_URL` environment
+//! variable (a path to a `.db` file carrying your schema — e.g. produced by your
+//! migrations). If the variable is unset, **every** `#[dao]` trait fails to
+//! compile. This is intentional: the crate cannot generate correct query code
+//! without a schema. See [`docs/guide.md`](https://github.com/jayson-lennon/dao/blob/main/docs/guide.md)
+//! for the full rationale and the schema-crate convention.
+//!
+//! ## Quick start
+//!
+//! ```ignore
+//! use dao::{async_trait, dao, Entity, Pool, Result};
+//!
+//! #[derive(Debug, Clone, Entity)]
+//! #[dao(table = "users")]
+//! struct User {
+//!     #[dao(pk)]
+//!     id: i64,
+//!     name: String,
+//! }
+//!
+//! #[dao]
+//! trait UserRepo {
+//!     #[query("SELECT id, name FROM users WHERE id = ?")]
+//!     async fn get(&self, id: i64) -> Result<Option<User>>;
+//!
+//!     #[insert]
+//!     async fn create(&self, user: User) -> Result<ExecuteResult>;
+//! }
+//!
+//! // UserRepo is now a concrete trait; dao generates a `UserRepoImpl` struct
+//! // whose methods are pre-validated against your schema.
+//! ```
+//!
+//! ```no_run
+//! use dao::{Pool, Result};
+//! # #[tokio::main] async fn main() -> Result<()> {
+//! // Open a bounded connection pool over an in-memory database.
+//! let pool = Pool::open(":memory:")?;
+//! pool.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)", vec![]).await?;
+//! # Ok(()) }
+//! ```
+//!
+//! ## Building a DAO
+//!
+//! - A bounded async connection [`Pool`] (see [`PoolBuilder`]) owns the database;
+//!   each `#[dao]` trait gets a `{Trait}Impl` you construct via `dao.with(&pool)`.
+//! - A [`Transaction`] lets multiple DAOs share one connection atomically; [`Conn`]
+//!   unifies both so generated methods work against either.
+
 pub mod conn;
 pub mod entity_meta;
 pub mod error;
@@ -23,6 +82,11 @@ pub mod row;
 pub mod to_row;
 pub mod to_sql;
 
+/// Procedural macros: [`dao`] turns an annotated trait into a concrete
+/// `{Trait}Impl` with async, schema-validated method bodies; [`Entity`] derives
+/// the `FromRow`/`ToRow` column mapping for a struct.
+///
+/// See the [crate-level docs](crate) for the `DAO_DATABASE_URL` requirement.
 pub use dao_macros::{dao, Entity};
 
 pub use conn::Conn;

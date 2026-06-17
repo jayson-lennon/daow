@@ -29,3 +29,10 @@ rusqlite.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.docs.rs]
+# The `dao` library crate contains no `#[dao]` invocations, so docs.rs can
+# build it without `DAO_DATABASE_URL`. (The macro is only exercised by the
+# `dao-macros` tests/examples and downstream consumers.) We do not inject the
+# env var here — doing so would be wrong for any other consumer's schema.
+all-features = true
