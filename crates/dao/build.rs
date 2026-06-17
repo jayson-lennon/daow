@@ -16,16 +16,15 @@
 use std::path::PathBuf;
 
 fn main() {
-    let db_dir = PathBuf::from("tests/db");
-    let db_path = db_dir.join("test.db");
+    // Write the validation schema to OUT_DIR (writable, per-build, cleaned by
+    // `cargo clean`) and expose its path as DAO_DATABASE_URL so the #[dao] macro
+    // can validate #[query] / #[execute] SQL at compile time. Never write into
+    // the source tree — that breaks read-only checkouts.
+    let dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR not set"));
+    let db_path = dir.join("dao_macro_validation.db");
 
-    // Create the directory if it doesn't exist
-    std::fs::create_dir_all(&db_dir).expect("Failed to create tests/db directory");
-
-    // Always recreate the DB to ensure schema is up to date
-    if db_path.exists() {
-        std::fs::remove_file(&db_path).expect("Failed to remove old test.db");
-    }
+    // Always recreate so the schema is current.
+    let _ = std::fs::remove_file(&db_path);
 
     let conn = rusqlite::Connection::open(&db_path)
         .unwrap_or_else(|e| panic!("Failed to create {}: {e}", db_path.display()));
@@ -57,4 +56,10 @@ fn main() {
          CREATE TABLE junctions (a INTEGER NOT NULL, b INTEGER NOT NULL, PRIMARY KEY(a, b));"
     )
     .expect("Failed to create schema");
+
+    // Expose the validation DB to the #[dao] macro for every crate that depends
+    // on `dao`. `cargo:rustc-env` propagates to dependents, so downstream
+    // consumers (e.g. jinn) compile their #[dao] invocations against this DB
+    // without needing their own DAO_DATABASE_URL wiring.
+    println!("cargo:rustc-env=DAO_DATABASE_URL={}", db_path.display());
 }
