@@ -1,11 +1,11 @@
 error[E0080]: evaluation panicked: parameter count mismatch: SQL has 2usize placeholders but entity has a different field count
-  --> tests/compile_fail/execute_entity_field_count_mismatch.rs:13:1
+  --> tests/compile_fail/execute_entity_field_count_mismatch.rs:28:1
    |
-13 | #[dao]
+28 | #[dao]
    | ^^^^^^ evaluation of `<BadDao as BadDaoTrait>::bad_insert::{closure#0}::_` failed here
 
 error[E0080]: evaluation panicked: parameter count mismatch: SQL has 2usize placeholders but entity has a different field count
-  --> tests/compile_fail/execute_entity_field_count_mismatch.rs:13:1
+  --> tests/compile_fail/execute_entity_field_count_mismatch.rs:28:1
    |
-13 | #[dao]
+28 | #[dao]
    | ^^^^^^ evaluation of `<BadDaoView<'a> as BadDaoTrait>::bad_insert::{closure#0}::_` failed here
